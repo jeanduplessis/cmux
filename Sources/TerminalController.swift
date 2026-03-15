@@ -1517,6 +1517,15 @@ class TerminalController {
         case "current_workspace":
             return currentWorkspace()
 
+        case "project_create":
+            return v1ProjectCreate(args)
+
+        case "project_list":
+            return v1ProjectList()
+
+        case "project_remove":
+            return v1ProjectRemove(args)
+
         case "send":
             return sendInput(args)
 
@@ -1912,6 +1921,14 @@ class TerminalController {
         case "workspace.last":
             return v2Result(id: id, self.v2WorkspaceLast(params: params))
 
+        // Projects
+        case "project.create":
+            return v2Result(id: id, self.v2ProjectCreate(params: params))
+        case "project.list":
+            return v2Result(id: id, self.v2ProjectList(params: params))
+        case "project.remove":
+            return v2Result(id: id, self.v2ProjectRemove(params: params))
+
         // Settings
         case "settings.open":
             return v2Result(id: id, self.v2SettingsOpen(params: params))
@@ -2281,6 +2298,9 @@ class TerminalController {
             "workspace.next",
             "workspace.previous",
             "workspace.last",
+            "project.create",
+            "project.list",
+            "project.remove",
             "settings.open",
             "feedback.open",
             "feedback.submit",
@@ -3046,7 +3066,7 @@ class TerminalController {
         var workspaces: [[String: Any]] = []
         v2MainSync {
             workspaces = tabManager.tabs.enumerated().map { index, ws in
-                return [
+                var entry: [String: Any] = [
                     "id": ws.id.uuidString,
                     "ref": v2Ref(kind: .workspace, uuid: ws.id),
                     "index": index,
@@ -3056,6 +3076,16 @@ class TerminalController {
                     "current_directory": v2OrNull(ws.currentDirectory),
                     "custom_color": v2OrNull(ws.customColor)
                 ]
+                if let projectId = ws.projectId {
+                    entry["project_id"] = projectId.uuidString
+                }
+                if let worktreeBranch = ws.worktreeBranch {
+                    entry["worktree_branch"] = worktreeBranch
+                }
+                if let worktreePath = ws.worktreePath {
+                    entry["worktree_path"] = worktreePath
+                }
+                return entry
             }
         }
 
@@ -5598,6 +5628,257 @@ class TerminalController {
             FeedbackComposerBridge.openComposer(in: targetWindow)
         }
         return .ok(["opened": true])
+    }
+
+    // MARK: - V2 Project Commands
+
+    private func v2ProjectCreate(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let repoPath = v2String(params, "repo_path") else {
+            return .err(code: "invalid_params", message: "Missing or invalid repo_path", data: nil)
+        }
+
+        let customName = v2String(params, "name")
+
+        guard WorktreeManager.isGitRepository(path: repoPath) else {
+            return .err(code: "not_git_repo", message: "The specified path is not a git repository", data: nil)
+        }
+
+        var projectId: UUID?
+
+        // Detect main branch synchronously (runGitCommand is already sync)
+        guard let mainBranch = WorktreeManager.detectMainBranchSync(repoPath: repoPath) else {
+            return .err(code: "branch_detection_failed", message: "Could not detect main branch", data: nil)
+        }
+
+        let projectName = customName ?? URL(fileURLWithPath: repoPath).lastPathComponent
+
+        var duplicatePath = false
+        v2MainSync {
+            let project = Project(
+                name: projectName,
+                repositoryPath: repoPath,
+                mainBranch: mainBranch
+            )
+            guard tabManager.addProject(project) else {
+                duplicatePath = true
+                return
+            }
+            projectId = project.id
+
+            // Auto-create main workspace
+            tabManager.addWorkspaceToProject(
+                projectId: project.id,
+                workingDirectory: repoPath,
+                title: mainBranch,
+                select: v2FocusAllowed()
+            )
+        }
+
+        if duplicatePath {
+            return .err(code: "duplicate_project", message: "A project for this repository already exists", data: nil)
+        }
+
+        guard let id = projectId else {
+            return .err(code: "internal_error", message: "Failed to create project", data: nil)
+        }
+
+        let windowId = v2ResolveWindowId(tabManager: tabManager)
+        return .ok([
+            "project_id": id.uuidString,
+            "name": projectName,
+            "main_branch": mainBranch,
+            "window_id": v2OrNull(windowId?.uuidString),
+            "window_ref": v2Ref(kind: .window, uuid: windowId)
+        ])
+    }
+
+    private func v2ProjectList(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+
+        var projects: [[String: Any]] = []
+        v2MainSync {
+            projects = tabManager.projects.map { project in
+                let childWorkspaces = tabManager.tabs.filter { $0.projectId == project.id }
+                return [
+                    "id": project.id.uuidString,
+                    "name": project.name,
+                    "repository_path": project.repositoryPath,
+                    "main_branch": project.mainBranch,
+                    "is_expanded": project.isExpanded,
+                    "workspace_count": childWorkspaces.count,
+                    "workspace_ids": childWorkspaces.map(\.id.uuidString)
+                ]
+            }
+        }
+
+        let windowId = v2ResolveWindowId(tabManager: tabManager)
+        return .ok([
+            "window_id": v2OrNull(windowId?.uuidString),
+            "window_ref": v2Ref(kind: .window, uuid: windowId),
+            "projects": projects
+        ])
+    }
+
+    private func v2ProjectRemove(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let projectId = v2UUID(params, "project_id") else {
+            return .err(code: "invalid_params", message: "Missing or invalid project_id", data: nil)
+        }
+
+        var found = false
+        var worktreePathsToRemove: [String] = []
+        var repoPath: String?
+
+        v2MainSync {
+            guard let project = tabManager.project(withId: projectId) else { return }
+            found = true
+            repoPath = project.repositoryPath
+
+            // Capture worktree paths before closing
+            let childWorkspaces = tabManager.tabs.filter { $0.projectId == projectId }
+            worktreePathsToRemove = childWorkspaces.compactMap(\.worktreePath)
+
+            // Close all child workspaces
+            for workspace in childWorkspaces {
+                tabManager.closeWorkspace(tabId: workspace.id)
+            }
+
+            // Remove the project
+            tabManager.removeProject(projectId: projectId)
+        }
+
+        // Clean up worktrees in background (force: programmatic removal)
+        if let repoPath, !worktreePathsToRemove.isEmpty {
+            Task.detached {
+                for path in worktreePathsToRemove {
+                    try? await WorktreeManager.removeWorktree(
+                        repoPath: repoPath,
+                        worktreePath: path,
+                        force: true
+                    )
+                }
+            }
+        }
+
+        let windowId = v2ResolveWindowId(tabManager: tabManager)
+        return found
+            ? .ok([
+                "window_id": v2OrNull(windowId?.uuidString),
+                "window_ref": v2Ref(kind: .window, uuid: windowId),
+                "project_id": projectId.uuidString
+            ])
+            : .err(code: "not_found", message: "Project not found", data: [
+                "project_id": projectId.uuidString
+            ])
+    }
+
+    // MARK: - V1 Project Commands
+
+    private func v1ProjectCreate(_ args: String) -> String {
+        guard let tabManager = tabManager else { return "ERROR: TabManager not available" }
+
+        let repoPath = args.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !repoPath.isEmpty else { return "ERR missing repo path" }
+        guard WorktreeManager.isGitRepository(path: repoPath) else {
+            return "ERR not a git repository"
+        }
+
+        // Detect main branch synchronously (runGitCommand is already sync)
+        guard let mainBranch = WorktreeManager.detectMainBranchSync(repoPath: repoPath) else {
+            return "ERR could not detect main branch"
+        }
+
+        let name = URL(fileURLWithPath: repoPath).lastPathComponent
+        var projectId: UUID?
+        var isDuplicate = false
+
+        DispatchQueue.main.sync {
+            let project = Project(
+                name: name,
+                repositoryPath: repoPath,
+                mainBranch: mainBranch
+            )
+            guard tabManager.addProject(project) else {
+                isDuplicate = true
+                return
+            }
+            projectId = project.id
+
+            let shouldFocus = socketCommandAllowsInAppFocusMutations()
+            tabManager.addWorkspaceToProject(
+                projectId: project.id,
+                workingDirectory: repoPath,
+                title: mainBranch,
+                select: shouldFocus
+            )
+        }
+
+        if isDuplicate { return "ERR project already exists for this repository" }
+        guard let id = projectId else { return "ERR failed to create project" }
+        return "OK \(id.uuidString)"
+    }
+
+    private func v1ProjectList() -> String {
+        guard let tabManager = tabManager else { return "ERROR: TabManager not available" }
+
+        var lines: [String] = []
+        DispatchQueue.main.sync {
+            for project in tabManager.projects {
+                let childCount = tabManager.tabs.filter { $0.projectId == project.id }.count
+                lines.append("\(project.id.uuidString) \(project.name) [\(childCount) workspaces] \(project.repositoryPath)")
+            }
+        }
+
+        return lines.isEmpty ? "OK (no projects)" : lines.joined(separator: "\n")
+    }
+
+    private func v1ProjectRemove(_ args: String) -> String {
+        guard let tabManager = tabManager else { return "ERROR: TabManager not available" }
+
+        let projectIdStr = args.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let projectId = UUID(uuidString: projectIdStr) else {
+            return "ERR invalid project_id"
+        }
+
+        var found = false
+        var worktreePathsToRemove: [String] = []
+        var repoPath: String?
+
+        DispatchQueue.main.sync {
+            guard let project = tabManager.project(withId: projectId) else { return }
+            found = true
+            repoPath = project.repositoryPath
+
+            let childWorkspaces = tabManager.tabs.filter { $0.projectId == projectId }
+            worktreePathsToRemove = childWorkspaces.compactMap(\.worktreePath)
+
+            for workspace in childWorkspaces {
+                tabManager.closeWorkspace(tabId: workspace.id)
+            }
+            tabManager.removeProject(projectId: projectId)
+        }
+
+        // Clean up worktrees in background (force: programmatic removal)
+        if let repoPath, !worktreePathsToRemove.isEmpty {
+            Task.detached {
+                for path in worktreePathsToRemove {
+                    try? await WorktreeManager.removeWorktree(
+                        repoPath: repoPath,
+                        worktreePath: path,
+                        force: true
+                    )
+                }
+            }
+        }
+
+        return found ? "OK" : "ERR project not found"
     }
 
     private func v2SettingsOpen(params: [String: Any]) -> V2CallResult {

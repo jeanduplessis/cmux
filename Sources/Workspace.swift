@@ -162,7 +162,10 @@ extension Workspace {
             statusEntries: statusSnapshots,
             logEntries: logSnapshots,
             progress: progressSnapshot,
-            gitBranch: gitBranchSnapshot
+            gitBranch: gitBranchSnapshot,
+            projectId: projectId,
+            worktreePath: worktreePath,
+            worktreeBranch: worktreeBranch
         )
     }
 
@@ -194,6 +197,9 @@ extension Workspace {
         setCustomTitle(snapshot.customTitle)
         setCustomColor(snapshot.customColor)
         isPinned = snapshot.isPinned
+        projectId = snapshot.projectId
+        worktreePath = snapshot.worktreePath
+        worktreeBranch = snapshot.worktreeBranch
 
         // Status entries and agent PIDs are ephemeral runtime state tied to running
         // processes (e.g. claude_code "Running"). Don't restore them across app
@@ -916,6 +922,17 @@ final class Workspace: Identifiable, ObservableObject {
     @Published var customColor: String?  // hex string, e.g. "#C0392B"
     @Published var currentDirectory: String
 
+    /// The ID of the project this workspace belongs to, or nil for standalone workspaces.
+    var projectId: UUID?
+
+    /// Absolute path to the git worktree directory for project workspaces.
+    /// Nil for standalone workspaces and for the "main" workspace of a project.
+    var worktreePath: String?
+
+    /// Branch name for the git worktree (e.g. "fix-auth-bug").
+    /// Nil for standalone workspaces and for the "main" workspace of a project.
+    var worktreeBranch: String?
+
     /// Ordinal for CMUX_PORT range assignment (monotonically increasing per app session)
     var portOrdinal: Int = 0
 
@@ -1131,13 +1148,19 @@ final class Workspace: Identifiable, ObservableObject {
         title: String = "Terminal",
         workingDirectory: String? = nil,
         portOrdinal: Int = 0,
-        configTemplate: ghostty_surface_config_s? = nil
+        configTemplate: ghostty_surface_config_s? = nil,
+        projectId: UUID? = nil,
+        worktreePath: String? = nil,
+        worktreeBranch: String? = nil
     ) {
         self.id = UUID()
         self.portOrdinal = portOrdinal
         self.processTitle = title
         self.title = title
         self.customTitle = nil
+        self.projectId = projectId
+        self.worktreePath = worktreePath
+        self.worktreeBranch = worktreeBranch
 
         let trimmedWorkingDirectory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let hasWorkingDirectory = !trimmedWorkingDirectory.isEmpty

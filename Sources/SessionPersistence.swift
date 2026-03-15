@@ -339,11 +339,25 @@ struct SessionWorkspaceSnapshot: Codable, Sendable {
     var logEntries: [SessionLogEntrySnapshot]
     var progress: SessionProgressSnapshot?
     var gitBranch: SessionGitBranchSnapshot?
+    var projectId: UUID?
+    var worktreePath: String?
+    var worktreeBranch: String?
+}
+
+struct SessionProjectSnapshot: Codable, Sendable {
+    var id: UUID
+    var name: String
+    var repositoryPath: String
+    var mainBranch: String
+    var isExpanded: Bool
+    var workspaceIds: [UUID]
+    var customColor: String?
 }
 
 struct SessionTabManagerSnapshot: Codable, Sendable {
     var selectedWorkspaceIndex: Int?
     var workspaces: [SessionWorkspaceSnapshot]
+    var projects: [SessionProjectSnapshot]?
 }
 
 struct SessionWindowSnapshot: Codable, Sendable {

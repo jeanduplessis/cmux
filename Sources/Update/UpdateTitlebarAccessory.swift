@@ -240,6 +240,7 @@ struct TitlebarControlsView: View {
     let onToggleSidebar: () -> Void
     let onToggleNotifications: () -> Void
     let onNewTab: () -> Void
+    let onNewProject: () -> Void
     @AppStorage("titlebarControlsStyle") private var styleRawValue = TitlebarControlsStyle.classic.rawValue
     @AppStorage(ShortcutHintDebugSettings.titlebarHintXKey) private var titlebarShortcutHintXOffset = ShortcutHintDebugSettings.defaultTitlebarHintX
     @AppStorage(ShortcutHintDebugSettings.titlebarHintYKey) private var titlebarShortcutHintYOffset = ShortcutHintDebugSettings.defaultTitlebarHintY
@@ -357,17 +358,34 @@ struct TitlebarControlsView: View {
             .accessibilityLabel(String(localized: "titlebar.notifications.accessibilityLabel", defaultValue: "Notifications"))
             .safeHelp(KeyboardShortcutSettings.Action.showNotifications.tooltip(String(localized: "titlebar.notifications.tooltip", defaultValue: "Show notifications")))
 
-            TitlebarControlButton(config: config, action: {
-                #if DEBUG
-                dlog("titlebar.newTab")
-                #endif
-                onNewTab()
-            }) {
+            Menu {
+                Button {
+                    #if DEBUG
+                    dlog("titlebar.newTab")
+                    #endif
+                    onNewTab()
+                } label: {
+                    Label(String(localized: "titlebar.menu.newWorkspace", defaultValue: "New Workspace"), systemImage: "terminal")
+                }
+                Button {
+                    #if DEBUG
+                    dlog("titlebar.newProject")
+                    #endif
+                    onNewProject()
+                } label: {
+                    Label(String(localized: "titlebar.menu.newProject", defaultValue: "New Project…"), systemImage: "folder.badge.plus")
+                }
+            } label: {
                 iconLabel(systemName: "plus", config: config)
+                    .frame(width: config.buttonSize, height: config.buttonSize)
+                    .contentShape(Rectangle())
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: config.buttonSize, height: config.buttonSize)
             .accessibilityIdentifier("titlebarControl.newTab")
-            .accessibilityLabel(String(localized: "titlebar.newWorkspace.accessibilityLabel", defaultValue: "New Workspace"))
-            .safeHelp(KeyboardShortcutSettings.Action.newTab.tooltip(String(localized: "titlebar.newWorkspace.tooltip", defaultValue: "New workspace")))
+            .accessibilityLabel(String(localized: "titlebar.newWorkspace.accessibilityLabel", defaultValue: "New"))
+            .safeHelp(String(localized: "titlebar.new.tooltip", defaultValue: "New workspace or project"))
         }
 
         let paddedContent = content.padding(config.groupPadding)
@@ -720,6 +738,7 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
         let toggleSidebar = { _ = AppDelegate.shared?.sidebarState?.toggle() }
         let toggleNotifications: () -> Void = { _ = AppDelegate.shared?.toggleNotificationsPopover(animated: true) }
         let newTab = { _ = AppDelegate.shared?.tabManager?.addTab() }
+        let newProject: () -> Void = { AppDelegate.shared?.handleNewProjectRequest() }
 
         hostingView = NonDraggableHostingView(
             rootView: TitlebarControlsView(
@@ -727,7 +746,8 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
                 viewModel: viewModel,
                 onToggleSidebar: toggleSidebar,
                 onToggleNotifications: toggleNotifications,
-                onNewTab: newTab
+                onNewTab: newTab,
+                onNewProject: newProject
             )
         )
 

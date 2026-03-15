@@ -2364,6 +2364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         prepareStartupSessionSnapshotIfNeeded()
         startSessionAutosaveTimerIfNeeded()
         startSocketListenerHealthMonitorIfNeeded()
+        installProjectNotificationObservers()
 #if DEBUG
         setupJumpUnreadUITestIfNeeded()
         setupGotoSplitUITestIfNeeded()
@@ -7817,6 +7818,325 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard response == .alertFirstButtonReturn else { return true }
         tabManager.setCustomTitle(tabId: tab.id, title: input.stringValue)
         return true
+    }
+
+    // MARK: - Project Management
+
+    private var projectObservers: [NSObjectProtocol] = []
+    private var didInstallProjectObservers = false
+
+    private func installProjectNotificationObservers() {
+        guard !didInstallProjectObservers else { return }
+        didInstallProjectObservers = true
+        projectObservers.append(NotificationCenter.default.addObserver(
+            forName: .newProjectRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleNewProjectRequest()
+            }
+        })
+
+        projectObservers.append(NotificationCenter.default.addObserver(
+            forName: .projectNewWorkspaceRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let projectId = notification.userInfo?["projectId"] as? UUID else { return }
+                self?.handleNewWorkspaceInProject(projectId: projectId)
+            }
+        })
+
+        projectObservers.append(NotificationCenter.default.addObserver(
+            forName: .projectRenameRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let projectId = notification.userInfo?["projectId"] as? UUID else { return }
+                self?.handleRenameProject(projectId: projectId)
+            }
+        })
+
+        projectObservers.append(NotificationCenter.default.addObserver(
+            forName: .projectRemoveRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let projectId = notification.userInfo?["projectId"] as? UUID else { return }
+                self?.handleRemoveProject(projectId: projectId)
+            }
+        })
+    }
+
+    func handleNewProjectRequest() {
+        guard let tabManager else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.title = String(localized: "dialog.newProject.panelTitle", defaultValue: "Select Git Repository")
+        panel.prompt = String(localized: "dialog.newProject.panelPrompt", defaultValue: "Open")
+        panel.message = String(localized: "dialog.newProject.panelMessage", defaultValue: "Choose a git repository directory for the new project.")
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let repoPath = url.path
+
+        // Validate it's a git repository
+        guard WorktreeManager.isGitRepository(path: repoPath) else {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = String(localized: "dialog.newProject.notGitRepo.title", defaultValue: "Not a Git Repository")
+            alert.informativeText = String(localized: "dialog.newProject.notGitRepo.message", defaultValue: "The selected directory is not a git repository. Please choose a directory that contains a git repository.")
+            alert.addButton(withTitle: String(localized: "common.ok", defaultValue: "OK"))
+            alert.runModal()
+            return
+        }
+
+        // Detect main branch and remote origin off-main to avoid blocking the UI
+        let fallbackName = url.lastPathComponent
+        Task { @MainActor [weak self] in
+            let mainBranch: String
+            do {
+                mainBranch = try await Task.detached {
+                    try await WorktreeManager.detectMainBranch(repoPath: repoPath)
+                }.value
+            } catch {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = String(localized: "dialog.newProject.noBranch.title", defaultValue: "Could Not Detect Main Branch")
+                alert.informativeText = String(localized: "dialog.newProject.noBranch.message", defaultValue: "Could not detect the main branch of this repository. Please ensure it has a 'main' or 'master' branch.")
+                alert.addButton(withTitle: String(localized: "common.ok", defaultValue: "OK"))
+                alert.runModal()
+                return
+            }
+
+            // Attempt to derive "org/repo" from origin remote URL
+            let repoName: String = await {
+                let remoteURL: String? = await Task.detached {
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                    process.arguments = ["-C", repoPath, "remote", "get-url", "origin"]
+                    let pipe = Pipe()
+                    process.standardOutput = pipe
+                    process.standardError = FileHandle.nullDevice
+                    do {
+                        try process.run()
+                        process.waitUntilExit()
+                        guard process.terminationStatus == 0 else { return nil }
+                        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                        return String(data: data, encoding: .utf8)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                    } catch {
+                        return nil
+                    }
+                }.value
+
+                if let remoteURL, !remoteURL.isEmpty {
+                    // Parse org/repo from SSH (git@github.com:org/repo.git)
+                    // or HTTPS (https://github.com/org/repo.git) URLs
+                    let cleaned = remoteURL
+                        .replacingOccurrences(of: ".git", with: "")
+                    if let colonIdx = cleaned.lastIndex(of: ":"),
+                       cleaned.hasPrefix("git@") {
+                        let path = String(cleaned[cleaned.index(after: colonIdx)...])
+                        if path.contains("/") { return path.lowercased() }
+                    }
+                    if let url = URL(string: cleaned) {
+                        let components = url.pathComponents.filter { $0 != "/" }
+                        if components.count >= 2 {
+                            return "\(components[components.count - 2])/\(components[components.count - 1])".lowercased()
+                        }
+                    }
+                }
+                return fallbackName.lowercased()
+            }()
+
+            guard let tabManager = self?.tabManager else { return }
+            let project = Project(
+                name: repoName,
+                repositoryPath: repoPath,
+                mainBranch: mainBranch
+            )
+            guard tabManager.addProject(project) else {
+                let dupAlert = NSAlert()
+                dupAlert.alertStyle = .informational
+                dupAlert.messageText = String(localized: "dialog.newProject.duplicate.title", defaultValue: "Project Already Exists")
+                dupAlert.informativeText = String(localized: "dialog.newProject.duplicate.message", defaultValue: "A project for this repository already exists.")
+                dupAlert.addButton(withTitle: String(localized: "common.ok", defaultValue: "OK"))
+                dupAlert.runModal()
+                return
+            }
+
+            // Auto-create a "main" workspace for the project
+            tabManager.addWorkspaceToProject(
+                projectId: project.id,
+                workingDirectory: repoPath,
+                title: mainBranch
+            )
+        }
+    }
+
+    func handleNewWorkspaceInProject(projectId: UUID) {
+        guard let tabManager,
+              let project = tabManager.project(withId: projectId) else { return }
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "dialog.newProjectWorkspace.title", defaultValue: "New Workspace in Project")
+        alert.informativeText = String(
+            localized: "dialog.newProjectWorkspace.message",
+            defaultValue: "Enter a name for the new workspace. A git branch and worktree will be created automatically."
+        )
+        let input = NSTextField(string: "")
+        input.placeholderString = String(localized: "dialog.newProjectWorkspace.placeholder", defaultValue: "Workspace name (e.g. Fix auth bug)")
+        input.frame = NSRect(x: 0, y: 0, width: 300, height: 22)
+        alert.accessoryView = input
+        alert.addButton(withTitle: String(localized: "common.create", defaultValue: "Create"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+        let alertWindow = alert.window
+        alertWindow.initialFirstResponder = input
+        DispatchQueue.main.async {
+            alertWindow.makeFirstResponder(input)
+        }
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+
+        let workspaceName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !workspaceName.isEmpty else { return }
+
+        let branchSlug = WorktreeManager.slugify(workspaceName)
+        let projectSlug = WorktreeManager.projectSlug(project.name)
+        let repoPath = project.repositoryPath
+        let mainBranch = project.mainBranch
+        let projId = project.id
+
+        Task { @MainActor [weak self] in
+            // Run git operations off-main to avoid blocking the UI
+            let branchAndPath: (String, String)
+            do {
+                branchAndPath = try await Task.detached {
+                    let branchName = await WorktreeManager.uniqueBranchName(
+                        baseName: branchSlug,
+                        repoPath: repoPath
+                    )
+                    let worktreePath = try await WorktreeManager.createWorktree(
+                        repoPath: repoPath,
+                        projectSlug: projectSlug,
+                        branchName: branchName,
+                        baseBranch: mainBranch
+                    )
+                    return (branchName, worktreePath)
+                }.value
+            } catch {
+                let errorAlert = NSAlert()
+                errorAlert.alertStyle = .warning
+                errorAlert.messageText = String(localized: "dialog.newProjectWorkspace.error.title", defaultValue: "Worktree Creation Failed")
+                errorAlert.informativeText = error.localizedDescription
+                errorAlert.addButton(withTitle: String(localized: "common.ok", defaultValue: "OK"))
+                errorAlert.runModal()
+                return
+            }
+
+            let (branchName, worktreePath) = branchAndPath
+
+            // Create the workspace on main
+            guard let tabManager = self?.tabManager else { return }
+            tabManager.addWorkspaceToProject(
+                projectId: projId,
+                workingDirectory: worktreePath,
+                title: workspaceName,
+                worktreePath: worktreePath,
+                worktreeBranch: branchName
+            )
+        }
+    }
+
+    func handleRemoveProject(projectId: UUID) {
+        guard let tabManager,
+              let project = tabManager.project(withId: projectId) else { return }
+
+        let childWorkspaces = tabManager.tabs.filter { $0.projectId == projectId }
+        let worktreeWorkspaces = childWorkspaces.filter { $0.worktreePath != nil }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(localized: "dialog.removeProject.title", defaultValue: "Remove Project?")
+
+        if worktreeWorkspaces.isEmpty {
+            alert.informativeText = String(
+                localized: "dialog.removeProject.noWorktrees.message",
+                defaultValue: "This will close all \(childWorkspaces.count) workspace(s) in the project."
+            )
+        } else {
+            alert.informativeText = String(
+                localized: "dialog.removeProject.withWorktrees.message",
+                defaultValue: "This will close all \(childWorkspaces.count) workspace(s) in the project. \(worktreeWorkspaces.count) worktree(s) on disk will also be removed."
+            )
+        }
+
+        alert.addButton(withTitle: String(localized: "dialog.removeProject.confirm", defaultValue: "Remove"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+
+        // Capture worktree paths before closing (workspace objects will be torn down)
+        let worktreePathsToRemove = worktreeWorkspaces.compactMap(\.worktreePath)
+        let repoPath = project.repositoryPath
+
+        // Close all child workspaces synchronously on main
+        let workspaceIds = childWorkspaces.map(\.id)
+        for workspaceId in workspaceIds {
+            tabManager.closeWorkspace(tabId: workspaceId)
+        }
+
+        // Remove the project
+        tabManager.removeProject(projectId: projectId)
+
+        // Clean up worktrees in background (force: user already confirmed removal)
+        if !worktreePathsToRemove.isEmpty {
+            Task.detached {
+                for path in worktreePathsToRemove {
+                    try? await WorktreeManager.removeWorktree(
+                        repoPath: repoPath,
+                        worktreePath: path,
+                        force: true
+                    )
+                }
+            }
+        }
+    }
+
+    func handleRenameProject(projectId: UUID) {
+        guard let tabManager,
+              let project = tabManager.project(withId: projectId) else { return }
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "dialog.renameProject.title", defaultValue: "Rename Project")
+        alert.informativeText = String(localized: "dialog.renameProject.message", defaultValue: "Enter a new name for this project.")
+        let input = NSTextField(string: project.name)
+        input.placeholderString = String(localized: "dialog.renameProject.placeholder", defaultValue: "Project name")
+        input.frame = NSRect(x: 0, y: 0, width: 240, height: 22)
+        alert.accessoryView = input
+        alert.addButton(withTitle: String(localized: "common.rename", defaultValue: "Rename"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+        let alertWindow = alert.window
+        alertWindow.initialFirstResponder = input
+        DispatchQueue.main.async {
+            alertWindow.makeFirstResponder(input)
+            input.selectText(nil)
+        }
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+        let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty else { return }
+        project.name = newName
     }
 
     private func handleCustomShortcut(event: NSEvent) -> Bool {

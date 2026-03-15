@@ -433,6 +433,12 @@ struct cmuxApp: App {
                         }
                     }
                 }
+
+                Divider()
+
+                Button(String(localized: "menu.file.newProject", defaultValue: "New Project…")) {
+                    appDelegate.handleNewProjectRequest()
+                }
             }
 
             // Close tab/workspace

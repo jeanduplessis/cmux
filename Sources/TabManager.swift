@@ -634,6 +634,7 @@ class TabManager: ObservableObject {
     weak var window: NSWindow?
 
     @Published var tabs: [Workspace] = []
+    @Published var projects: [Project] = []
     @Published private(set) var isWorkspaceCycleHot: Bool = false
     @Published private(set) var pendingBackgroundWorkspaceLoadIds: Set<UUID> = []
     @Published private(set) var debugPinnedWorkspaceLoadIds: Set<UUID> = []
@@ -810,6 +811,206 @@ class TabManager: ObservableObject {
     deinit {
         workspaceCycleCooldownTask?.cancel()
         agentPIDSweepTimer?.cancel()
+    }
+
+    // MARK: - Project Management
+
+    /// Computed sidebar items list that produces a flat list from the tabs array,
+    /// inserting project headers at the position of their first child workspace.
+    /// The ordering derives from `tabs` — projects appear at the position of their
+    /// first child workspace in the tabs array.
+    var sidebarItems: [SidebarItem] {
+        let projectLookup = Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0) })
+        var items: [SidebarItem] = []
+        items.reserveCapacity(tabs.count + projects.count)
+        var emittedProjectIds: Set<UUID> = []
+
+        for workspace in tabs {
+            if let projectId = workspace.projectId,
+               let project = projectLookup[projectId] {
+                // Emit project header before its first child
+                if !emittedProjectIds.contains(projectId) {
+                    emittedProjectIds.insert(projectId)
+                    items.append(.project(project))
+                }
+                // Emit child workspace only if the project is expanded
+                if project.isExpanded {
+                    items.append(.projectWorkspace(workspace, project: project))
+                }
+            } else {
+                items.append(.standaloneWorkspace(workspace))
+            }
+        }
+
+        return items
+    }
+
+    /// Look up a project by ID.
+    func project(withId id: UUID) -> Project? {
+        projects.first(where: { $0.id == id })
+    }
+
+    /// Look up the project that owns a given workspace.
+    func project(forWorkspaceId workspaceId: UUID) -> Project? {
+        guard let workspace = tabs.first(where: { $0.id == workspaceId }),
+              let projectId = workspace.projectId else {
+            return nil
+        }
+        return project(withId: projectId)
+    }
+
+    /// Add a new project. Rejects duplicates by ID or repository path.
+    /// - Returns: `true` if the project was added, `false` if rejected as duplicate.
+    @discardableResult
+    func addProject(_ project: Project) -> Bool {
+        guard !projects.contains(where: { $0.id == project.id }) else { return false }
+        guard !projects.contains(where: { $0.repositoryPath == project.repositoryPath }) else { return false }
+        projects.append(project)
+        sentryBreadcrumb("project.create", data: [
+            "projectId": project.id.uuidString,
+            "name": project.name,
+            "repoPath": project.repositoryPath
+        ])
+        return true
+    }
+
+    /// Remove a project by ID. As a safety net, any workspaces still referencing
+    /// this project are detached (projectId cleared). Callers should close child
+    /// workspaces before calling this when cleanup (e.g. worktree removal) is needed.
+    func removeProject(projectId: UUID) {
+        // Safety net: detach any workspaces that still reference this project
+        for workspace in tabs where workspace.projectId == projectId {
+            workspace.projectId = nil
+            workspace.worktreePath = nil
+            workspace.worktreeBranch = nil
+        }
+        projects.removeAll { $0.id == projectId }
+        sentryBreadcrumb("project.remove", data: ["projectId": projectId.uuidString])
+    }
+
+    /// Toggle project expand/collapse state.
+    func toggleProjectExpanded(projectId: UUID) {
+        guard let project = project(withId: projectId) else { return }
+        objectWillChange.send()
+        project.isExpanded.toggle()
+    }
+
+    /// Add a workspace as a child of a project.
+    @discardableResult
+    func addWorkspaceToProject(
+        projectId: UUID,
+        workingDirectory: String,
+        title: String,
+        worktreePath: String? = nil,
+        worktreeBranch: String? = nil,
+        select: Bool = true
+    ) -> Workspace? {
+        guard let project = project(withId: projectId) else { return nil }
+
+        let snapshot = workspaceCreationSnapshot()
+        let nextTabCount = snapshot.tabs.count + 1
+        sentryBreadcrumb("workspace.create.project", data: [
+            "tabCount": nextTabCount,
+            "projectId": projectId.uuidString
+        ])
+        let inheritedConfig = inheritedTerminalConfigForNewWorkspace(snapshot: snapshot)
+        let ordinal = Self.nextPortOrdinal
+        Self.nextPortOrdinal += 1
+
+        let newWorkspace = Workspace(
+            title: title,
+            workingDirectory: workingDirectory,
+            portOrdinal: ordinal,
+            configTemplate: inheritedConfig,
+            projectId: projectId,
+            worktreePath: worktreePath,
+            worktreeBranch: worktreeBranch
+        )
+        // Pin the workspace name so process title updates (terminal cwd) don't overwrite it.
+        // Project workspaces have an explicit name (branch or user-provided) that should
+        // remain the sidebar title; the path is shown in the branch/directory subtitle.
+        newWorkspace.setCustomTitle(title)
+        newWorkspace.owningTabManager = self
+        wireClosedBrowserTracking(for: newWorkspace)
+
+        // Insert after the last workspace of this project, or at the end if none exist
+        var updatedTabs = snapshot.tabs
+        let insertIndex: Int
+        if let lastProjectWorkspaceIndex = updatedTabs.lastIndex(where: { $0.projectId == projectId }) {
+            insertIndex = lastProjectWorkspaceIndex + 1
+        } else {
+            insertIndex = updatedTabs.count
+        }
+        updatedTabs.insert(newWorkspace, at: insertIndex)
+        tabs = updatedTabs
+
+        // Register in project
+        project.addWorkspaceId(newWorkspace.id)
+
+        // Schedule git metadata refresh
+        if let terminalPanel = newWorkspace.focusedTerminalPanel {
+            scheduleInitialWorkspaceGitMetadataRefresh(
+                workspaceId: newWorkspace.id,
+                panelId: terminalPanel.id,
+                directory: workingDirectory
+            )
+        }
+
+        if select {
+#if DEBUG
+            debugPrimeWorkspaceSwitchTrigger("create.project", to: newWorkspace.id)
+#endif
+            selectedTabId = newWorkspace.id
+            NotificationCenter.default.post(
+                name: .ghosttyDidFocusTab,
+                object: nil,
+                userInfo: [GhosttyNotificationKey.tabId: newWorkspace.id]
+            )
+        }
+
+        return newWorkspace
+    }
+
+    /// Move an existing standalone workspace into a project.
+    /// The workspace is repositioned in the tab list to sit after the last workspace of the project.
+    func moveWorkspaceToProject(workspaceId: UUID, projectId: UUID) {
+        guard let project = project(withId: projectId),
+              let workspace = tabs.first(where: { $0.id == workspaceId }) else { return }
+        // Don't move if already in this project
+        guard workspace.projectId != projectId else { return }
+
+        // If the workspace belonged to another project, remove it from that project first
+        if let oldProjectId = workspace.projectId,
+           let oldProject = self.project(withId: oldProjectId) {
+            oldProject.removeWorkspaceId(workspaceId)
+        }
+
+        // Assign project membership
+        workspace.projectId = projectId
+        project.addWorkspaceId(workspaceId)
+
+        // Reposition in tabs array: move after the last workspace of this project
+        var updatedTabs = tabs
+        updatedTabs.removeAll { $0.id == workspaceId }
+        let insertIndex: Int
+        if let lastProjectWorkspaceIndex = updatedTabs.lastIndex(where: { $0.projectId == projectId }) {
+            insertIndex = lastProjectWorkspaceIndex + 1
+        } else {
+            insertIndex = updatedTabs.count
+        }
+        updatedTabs.insert(workspace, at: insertIndex)
+        tabs = updatedTabs
+
+        // Ensure the project is expanded so the moved workspace is visible
+        if !project.isExpanded {
+            objectWillChange.send()
+            project.isExpanded = true
+        }
+
+        sentryBreadcrumb("workspace.moveToProject", data: [
+            "workspaceId": workspaceId.uuidString,
+            "projectId": projectId.uuidString
+        ])
     }
 
     // MARK: - Agent PID Sweep
@@ -1199,6 +1400,12 @@ class TabManager: ObservableObject {
         process.standardOutput = stdout
         process.standardError = FileHandle.nullDevice
 
+        // Augment PATH so git helper binaries (e.g. git-lfs) are reachable
+        // even when the app is launched from Finder with a minimal GUI PATH.
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = WorktreeManager.augmentedPath()
+        process.environment = env
+
         do {
             try process.run()
         } catch {
@@ -1482,6 +1689,12 @@ class TabManager: ObservableObject {
         clearInitialWorkspaceGitProbe(workspaceId: workspace.id)
         sidebarSelectedWorkspaceIds.remove(workspace.id)
 
+        // Clean up project membership
+        if let projectId = workspace.projectId,
+           let project = project(withId: projectId) {
+            project.removeWorkspaceId(workspace.id)
+        }
+
         AppDelegate.shared?.notificationStore?.clearNotifications(forTabId: workspace.id)
         unwireClosedBrowserTracking(for: workspace)
         workspace.teardownAllPanels()
@@ -1537,6 +1750,14 @@ class TabManager: ObservableObject {
         if select {
             selectedTabId = workspace.id
         }
+    }
+
+    /// Close a workspace by its ID. Project membership is cleaned up by
+    /// `closeWorkspace(_ workspace:)`. Callers that need worktree cleanup
+    /// must handle it separately (see `handleRemoveProject`, `v2ProjectRemove`).
+    func closeWorkspace(tabId: UUID) {
+        guard let workspace = tabs.first(where: { $0.id == tabId }) else { return }
+        closeWorkspace(workspace)
     }
 
     // Keep closeTab as convenience alias
@@ -1785,12 +2006,38 @@ class TabManager: ObservableObject {
         if requiresConfirmation,
            workspaceNeedsConfirmClose(workspace),
            !confirmClose(
-               title: String(localized: "dialog.closeWorkspace.title", defaultValue: "Close workspace?"),
-               message: String(localized: "dialog.closeWorkspace.message", defaultValue: "This will close the workspace and all of its panels."),
-               acceptCmdD: willCloseWindow
+                title: String(localized: "dialog.closeWorkspace.title", defaultValue: "Close workspace?"),
+                message: String(localized: "dialog.closeWorkspace.message", defaultValue: "This will close the workspace and all of its panels."),
+                acceptCmdD: willCloseWindow
            ) {
             return
         }
+
+        // For project workspaces with worktrees, prompt about cleanup
+        var shouldDeleteWorktree = false
+        if requiresConfirmation,
+           workspace.worktreePath != nil,
+           workspace.projectId != nil {
+            let worktreeAlert = NSAlert()
+            worktreeAlert.alertStyle = .informational
+            worktreeAlert.messageText = String(localized: "dialog.closeProjectWorkspace.title", defaultValue: "Close Workspace?")
+            worktreeAlert.informativeText = String(
+                localized: "dialog.closeProjectWorkspace.message",
+                defaultValue: "This workspace has a git worktree on disk. Would you like to keep or delete it?"
+            )
+            worktreeAlert.addButton(withTitle: String(localized: "dialog.closeProjectWorkspace.deleteWorktree", defaultValue: "Delete Worktree"))
+            worktreeAlert.addButton(withTitle: String(localized: "dialog.closeProjectWorkspace.keepWorktree", defaultValue: "Keep Worktree"))
+            worktreeAlert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+
+            let worktreeResponse = worktreeAlert.runModal()
+            if worktreeResponse == .alertThirdButtonReturn { return } // Cancel
+            shouldDeleteWorktree = worktreeResponse == .alertFirstButtonReturn
+        }
+
+        // Capture worktree info before close
+        let worktreePath = shouldDeleteWorktree ? workspace.worktreePath : nil
+        let repoPath = shouldDeleteWorktree ? workspace.projectId.flatMap({ project(withId: $0)?.repositoryPath }) : nil
+
         if tabs.count <= 1 {
             // Last workspace in this window: close the window (Cmd+Shift+W behavior).
             if let window {
@@ -1800,6 +2047,17 @@ class TabManager: ObservableObject {
             }
         } else {
             closeWorkspace(workspace)
+        }
+
+        // Clean up worktree in background if user chose to delete
+        if let worktreePath, let repoPath {
+            Task.detached {
+                try? await WorktreeManager.removeWorktree(
+                    repoPath: repoPath,
+                    worktreePath: worktreePath,
+                    force: true
+                )
+            }
         }
     }
 
@@ -4150,9 +4408,21 @@ extension TabManager {
         let selectedWorkspaceIndex = selectedTabId.flatMap { selectedTabId in
             tabs.firstIndex(where: { $0.id == selectedTabId })
         }
+        let projectSnapshots: [SessionProjectSnapshot]? = projects.isEmpty ? nil : projects.map { project in
+            SessionProjectSnapshot(
+                id: project.id,
+                name: project.name,
+                repositoryPath: project.repositoryPath,
+                mainBranch: project.mainBranch,
+                isExpanded: project.isExpanded,
+                workspaceIds: project.workspaceIds,
+                customColor: project.customColor
+            )
+        }
         return SessionTabManagerSnapshot(
             selectedWorkspaceIndex: selectedWorkspaceIndex,
-            workspaces: workspaceSnapshots
+            workspaces: workspaceSnapshots,
+            projects: projectSnapshots
         )
     }
 
@@ -4212,10 +4482,31 @@ extension TabManager {
             newSelectedId = newTabs.first?.id
         }
 
+        // Restore projects from snapshot
+        var restoredProjects: [Project] = []
+        if let projectSnapshots = snapshot.projects {
+            for projSnapshot in projectSnapshots {
+                let project = Project(
+                    id: projSnapshot.id,
+                    name: projSnapshot.name,
+                    repositoryPath: projSnapshot.repositoryPath,
+                    mainBranch: projSnapshot.mainBranch,
+                    isExpanded: projSnapshot.isExpanded,
+                    workspaceIds: projSnapshot.workspaceIds,
+                    customColor: projSnapshot.customColor
+                )
+                restoredProjects.append(project)
+            }
+        }
+
         // Single atomic assignment of @Published properties so SwiftUI observers
         // never see an intermediate state with empty tabs or nil selection.
         tabs = newTabs
+        projects = restoredProjects
         selectedTabId = newSelectedId
+
+        // Reconcile project-workspace cross-references after restore
+        reconcileProjectWorkspaceReferences()
 
         if let selectedTabId {
             NotificationCenter.default.post(
@@ -4223,6 +4514,30 @@ extension TabManager {
                 object: nil,
                 userInfo: [GhosttyNotificationKey.tabId: selectedTabId]
             )
+        }
+    }
+
+    /// Ensures project.workspaceIds and workspace.projectId are consistent.
+    /// Removes stale references in both directions.
+    private func reconcileProjectWorkspaceReferences() {
+        let tabIds = Set(tabs.map(\.id))
+        let projectIds = Set(projects.map(\.id))
+
+        // Remove stale workspace IDs from projects
+        for project in projects {
+            let validIds = project.workspaceIds.filter { tabIds.contains($0) }
+            if validIds.count != project.workspaceIds.count {
+                project.workspaceIds = validIds
+            }
+        }
+
+        // Clear dangling project references from workspaces
+        for workspace in tabs {
+            if let projectId = workspace.projectId, !projectIds.contains(projectId) {
+                workspace.projectId = nil
+                workspace.worktreePath = nil
+                workspace.worktreeBranch = nil
+            }
         }
     }
 }
@@ -4285,4 +4600,8 @@ extension Notification.Name {
     static let browserDidFocusAddressBar = Notification.Name("browserDidFocusAddressBar")
     static let browserDidBlurAddressBar = Notification.Name("browserDidBlurAddressBar")
     static let webViewDidReceiveClick = Notification.Name("webViewDidReceiveClick")
+    static let projectNewWorkspaceRequested = Notification.Name("cmux.projectNewWorkspaceRequested")
+    static let projectRenameRequested = Notification.Name("cmux.projectRenameRequested")
+    static let projectRemoveRequested = Notification.Name("cmux.projectRemoveRequested")
+    static let newProjectRequested = Notification.Name("cmux.newProjectRequested")
 }

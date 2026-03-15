@@ -75,7 +75,7 @@ func cmuxAccentColor() -> Color {
 }
 
 func sidebarSelectedWorkspaceBackgroundNSColor(for colorScheme: ColorScheme) -> NSColor {
-    cmuxAccentNSColor(for: colorScheme)
+    cmuxAccentNSColor(for: colorScheme).withAlphaComponent(0.75)
 }
 
 func sidebarSelectedWorkspaceForegroundNSColor(opacity: CGFloat) -> NSColor {
@@ -2046,7 +2046,8 @@ struct ContentView: View {
                     anchorView: fullscreenControlsViewModel.notificationsAnchorView
                 )
             },
-            onNewTab: { tabManager.addTab() }
+            onNewTab: { tabManager.addTab() },
+            onNewProject: { AppDelegate.shared?.handleNewProjectRequest() }
         )
     }
 
@@ -7790,39 +7791,54 @@ struct VerticalTabsSidebar: View {
                             .frame(height: trafficLightPadding)
 
                         LazyVStack(spacing: tabRowSpacing) {
-                            ForEach(Array(tabManager.tabs.enumerated()), id: \.element.id) { index, tab in
-                                TabItemView(
-                                    tabManager: tabManager,
-                                    notificationStore: notificationStore,
-                                    tab: tab,
-                                    index: index,
-                                    isActive: tabManager.selectedTabId == tab.id,
-                                    workspaceShortcutDigit: WorkspaceShortcutMapper.commandDigitForWorkspace(
-                                        at: index,
-                                        workspaceCount: workspaceCount
-                                    ),
-                                    canCloseWorkspace: canCloseWorkspace,
-                                    accessibilityWorkspaceCount: workspaceCount,
-                                    unreadCount: notificationStore.unreadCount(forTabId: tab.id),
-                                    latestNotificationText: {
-                                        guard showsSidebarNotificationMessage,
-                                              let notification = notificationStore.latestNotification(forTabId: tab.id) else {
-                                            return nil
-                                        }
-                                        let text = notification.body.isEmpty ? notification.title : notification.body
-                                        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                                        return trimmed.isEmpty ? nil : trimmed
-                                    }(),
-                                    rowSpacing: tabRowSpacing,
-                                    setSelectionToTabs: { selection = .tabs },
-                                    selectedTabIds: $selectedTabIds,
-                                    lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
-                                    showsModifierShortcutHints: modifierKeyMonitor.isModifierPressed,
-                                    dragAutoScrollController: dragAutoScrollController,
-                                    draggedTabId: $draggedTabId,
-                                    dropIndicator: $dropIndicator
-                                )
-                                .equatable()
+                            ForEach(tabManager.sidebarItems) { item in
+                                switch item {
+                                case .project(let project):
+                                    ProjectHeaderView(
+                                        tabManager: tabManager,
+                                        project: project,
+                                        childCount: project.workspaceIds.count,
+                                        draggedTabId: $draggedTabId,
+                                        dropIndicator: $dropIndicator
+                                    )
+                                    .equatable()
+                                case .standaloneWorkspace(let tab), .projectWorkspace(let tab, _):
+                                    let tabIndex = tabManager.tabs.firstIndex(where: { $0.id == tab.id }) ?? 0
+                                    TabItemView(
+                                        tabManager: tabManager,
+                                        notificationStore: notificationStore,
+                                        tab: tab,
+                                        index: tabIndex,
+                                        isActive: tabManager.selectedTabId == tab.id,
+                                        workspaceShortcutDigit: WorkspaceShortcutMapper.commandDigitForWorkspace(
+                                            at: tabIndex,
+                                            workspaceCount: workspaceCount
+                                        ),
+                                        canCloseWorkspace: canCloseWorkspace,
+                                        accessibilityWorkspaceCount: workspaceCount,
+                                        unreadCount: notificationStore.unreadCount(forTabId: tab.id),
+                                        latestNotificationText: {
+                                            guard showsSidebarNotificationMessage,
+                                                  let notification = notificationStore.latestNotification(forTabId: tab.id) else {
+                                                return nil
+                                            }
+                                            let text = notification.body.isEmpty ? notification.title : notification.body
+                                            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                                            return trimmed.isEmpty ? nil : trimmed
+                                        }(),
+                                        rowSpacing: tabRowSpacing,
+                                        setSelectionToTabs: { selection = .tabs },
+                                        selectedTabIds: $selectedTabIds,
+                                        lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
+                                        showsModifierShortcutHints: modifierKeyMonitor.isModifierPressed,
+                                        isProjectChild: item.isIndented,
+                                        projectWorkspaceKind: item.projectWorkspaceKind,
+                                        dragAutoScrollController: dragAutoScrollController,
+                                        draggedTabId: $draggedTabId,
+                                        dropIndicator: $dropIndicator
+                                    )
+                                    .equatable()
+                                }
                             }
                         }
                         .padding(.vertical, 8)
@@ -9987,6 +10003,19 @@ private struct SidebarEmptyArea: View {
                         .offset(y: -(rowSpacing / 2))
                 }
             }
+            .contextMenu {
+                Button(String(localized: "contextMenu.newWorkspace", defaultValue: "New Workspace")) {
+                    tabManager.addWorkspace(placementOverride: .end)
+                    selection = .tabs
+                }
+
+                Button(String(localized: "contextMenu.newProject", defaultValue: "New Project…")) {
+                    NotificationCenter.default.post(
+                        name: .newProjectRequested,
+                        object: nil
+                    )
+                }
+            }
     }
 
     private var shouldShowTopDropIndicator: Bool {
@@ -10071,6 +10100,216 @@ enum SidebarWorkspaceShortcutHintMetrics {
     #endif
 }
 
+// MARK: - ProjectHeaderView
+
+/// Sidebar row for a project header (expand/collapse, project name, context menu).
+/// Uses Equatable conformance + `.equatable()` to skip body re-evaluation
+/// when the parent ForEach rebuilds with unchanged values.
+private struct ProjectHeaderView: View, Equatable {
+    nonisolated static func == (lhs: ProjectHeaderView, rhs: ProjectHeaderView) -> Bool {
+        lhs.project === rhs.project &&
+        lhs.childCount == rhs.childCount
+    }
+
+    let tabManager: TabManager
+    @ObservedObject var project: Project
+    let childCount: Int
+    @Binding var draggedTabId: UUID?
+    @Binding var dropIndicator: SidebarDropIndicator?
+    @State private var isHovering = false
+    @State private var isDropTargeted = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// Folder icon color — uses the project's custom color if set, otherwise a muted accent.
+    private var projectIconColor: Color {
+        if let colorHex = project.customColor,
+           let color = NSColor(hex: colorHex) {
+            return Color(nsColor: color)
+        }
+        return .secondary
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Expand/collapse chevron
+            Image(systemName: project.isExpanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundColor(.secondary)
+                .frame(width: 12, height: 12)
+
+            // Folder icon — colored by project's custom color when set
+            Image(systemName: project.isExpanded ? "folder.fill" : "folder")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(projectIconColor)
+
+            // Project name
+            Text(project.name)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.primary.opacity(0.85))
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer()
+
+            // Child workspace count badge
+            if childCount > 0 {
+                Text("\(childCount)")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.secondary.opacity(0.7))
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.12))
+                    )
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                tabManager.toggleProjectExpanded(projectId: project.id)
+            }
+        }
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(isDropTargeted ? Color.accentColor.opacity(0.18) : (isHovering ? Color.primary.opacity(0.05) : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(Color.accentColor.opacity(isDropTargeted ? 0.6 : 0), lineWidth: 1.5)
+        )
+        .onDrop(of: SidebarTabDragPayload.dropContentTypes, delegate: ProjectHeaderDropDelegate(
+            projectId: project.id,
+            tabManager: tabManager,
+            draggedTabId: $draggedTabId,
+            dropIndicator: $dropIndicator,
+            isDropTargeted: $isDropTargeted
+        ))
+        .contextMenu {
+            Button(String(localized: "contextMenu.newWorkspaceInProject", defaultValue: "New Workspace in Project…")) {
+                NotificationCenter.default.post(
+                    name: .projectNewWorkspaceRequested,
+                    object: nil,
+                    userInfo: ["projectId": project.id]
+                )
+            }
+
+            Divider()
+
+            Button(String(localized: "contextMenu.renameProject", defaultValue: "Rename Project…")) {
+                NotificationCenter.default.post(
+                    name: .projectRenameRequested,
+                    object: nil,
+                    userInfo: ["projectId": project.id]
+                )
+            }
+
+            if project.isExpanded {
+                Button(String(localized: "contextMenu.collapseProject", defaultValue: "Collapse Project")) {
+                    tabManager.toggleProjectExpanded(projectId: project.id)
+                }
+            } else {
+                Button(String(localized: "contextMenu.expandProject", defaultValue: "Expand Project")) {
+                    tabManager.toggleProjectExpanded(projectId: project.id)
+                }
+            }
+
+            Menu(String(localized: "contextMenu.projectColor", defaultValue: "Project Color")) {
+                if project.customColor != nil {
+                    Button {
+                        project.customColor = nil
+                    } label: {
+                        Label(String(localized: "contextMenu.clearColor", defaultValue: "Clear Color"), systemImage: "xmark.circle")
+                    }
+                }
+
+                Button {
+                    promptProjectCustomColor()
+                } label: {
+                    Label(String(localized: "contextMenu.chooseCustomColor", defaultValue: "Choose Custom Color…"), systemImage: "paintpalette")
+                }
+
+                let palette = WorkspaceTabColorSettings.palette()
+                if !palette.isEmpty {
+                    Divider()
+                }
+
+                ForEach(palette, id: \.id) { entry in
+                    Button {
+                        project.customColor = WorkspaceTabColorSettings.normalizedHex(entry.hex)
+                    } label: {
+                        Label {
+                            Text(entry.name)
+                        } icon: {
+                            Image(nsImage: coloredCircleImage(color: projectColorSwatchColor(for: entry.hex)))
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button(String(localized: "contextMenu.removeProject", defaultValue: "Remove Project")) {
+                NotificationCenter.default.post(
+                    name: .projectRemoveRequested,
+                    object: nil,
+                    userInfo: ["projectId": project.id]
+                )
+            }
+        }
+    }
+
+    private func projectColorSwatchColor(for hex: String) -> NSColor {
+        WorkspaceTabColorSettings.displayNSColor(
+            hex: hex,
+            colorScheme: colorScheme,
+            forceBright: false
+        ) ?? NSColor(hex: hex) ?? .gray
+    }
+
+    private func promptProjectCustomColor() {
+        let alert = NSAlert()
+        alert.messageText = String(localized: "alert.customColor.title", defaultValue: "Custom Project Color")
+        alert.informativeText = String(localized: "alert.projectColor.message", defaultValue: "Enter a hex color in the format #RRGGBB.")
+
+        let seed = project.customColor ?? WorkspaceTabColorSettings.customColors().first ?? ""
+        let input = NSTextField(string: seed)
+        input.placeholderString = "#1565C0"
+        input.frame = NSRect(x: 0, y: 0, width: 240, height: 22)
+        alert.accessoryView = input
+        alert.addButton(withTitle: String(localized: "alert.customColor.apply", defaultValue: "Apply"))
+        alert.addButton(withTitle: String(localized: "alert.customColor.cancel", defaultValue: "Cancel"))
+
+        let alertWindow = alert.window
+        alertWindow.initialFirstResponder = input
+        DispatchQueue.main.async {
+            alertWindow.makeFirstResponder(input)
+            input.selectText(nil)
+        }
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+        guard let normalized = WorkspaceTabColorSettings.addCustomColor(input.stringValue) else {
+            let errorAlert = NSAlert()
+            errorAlert.alertStyle = .warning
+            errorAlert.messageText = String(localized: "alert.invalidColor.title", defaultValue: "Invalid Color")
+            errorAlert.informativeText = String(
+                localized: "alert.invalidColor.message",
+                defaultValue: "'\(input.stringValue)' is not a valid hex color. Use the format #RRGGBB."
+            )
+            errorAlert.addButton(withTitle: String(localized: "common.ok", defaultValue: "OK"))
+            errorAlert.runModal()
+            return
+        }
+        project.customColor = normalized
+    }
+}
+
 // PERF: TabItemView is Equatable so SwiftUI skips body re-evaluation when
 // the parent rebuilds with unchanged values. Without this, every TabManager
 // or NotificationStore publish causes ALL tab items to re-evaluate (~18% of
@@ -10090,7 +10329,9 @@ private struct TabItemView: View, Equatable {
         lhs.unreadCount == rhs.unreadCount &&
         lhs.latestNotificationText == rhs.latestNotificationText &&
         lhs.rowSpacing == rhs.rowSpacing &&
-        lhs.showsModifierShortcutHints == rhs.showsModifierShortcutHints
+        lhs.showsModifierShortcutHints == rhs.showsModifierShortcutHints &&
+        lhs.isProjectChild == rhs.isProjectChild &&
+        lhs.projectWorkspaceKind == rhs.projectWorkspaceKind
     }
 
     // Use plain references instead of @EnvironmentObject to avoid subscribing
@@ -10112,6 +10353,8 @@ private struct TabItemView: View, Equatable {
     @Binding var selectedTabIds: Set<UUID>
     @Binding var lastSidebarSelectionIndex: Int?
     let showsModifierShortcutHints: Bool
+    let isProjectChild: Bool
+    let projectWorkspaceKind: ProjectWorkspaceKind?
     let dragAutoScrollController: SidebarDragAutoScrollController
     @Binding var draggedTabId: UUID?
     @Binding var dropIndicator: SidebarDropIndicator?
@@ -10211,6 +10454,16 @@ private struct TabItemView: View, Equatable {
         isHovering && canCloseWorkspace && !(showsModifierShortcutHints || alwaysShowShortcutHints)
     }
 
+    /// SF Symbol name for the project workspace kind indicator.
+    private var projectWorkspaceKindIcon: String? {
+        switch projectWorkspaceKind {
+        case .main:     return "house"
+        case .worktree: return "arrow.triangle.branch"
+        case .external: return "arrow.up.forward.square"
+        case nil:       return nil
+        }
+    }
+
     private var workspaceShortcutLabel: String? {
         guard let workspaceShortcutDigit else { return nil }
         return "⌘\(workspaceShortcutDigit)"
@@ -10301,6 +10554,12 @@ private struct TabItemView: View, Equatable {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(activeSecondaryColor(0.8))
+                }
+
+                if let kindIcon = projectWorkspaceKindIcon {
+                    Image(systemName: kindIcon)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(activeSecondaryColor(0.7))
                 }
 
                 Text(tab.title)
@@ -10534,6 +10793,7 @@ private struct TabItemView: View, Equatable {
                 }
         )
         .padding(.horizontal, 6)
+        .padding(.leading, isProjectChild ? 16 : 0)
         .background {
             GeometryReader { proxy in
                 Color.clear
@@ -11953,6 +12213,52 @@ private struct SidebarBonsplitTabDropDelegate: DropDelegate {
         } else {
             lastSidebarSelectionIndex = nil
         }
+    }
+}
+
+/// Drop delegate for project header rows. Accepts sidebar tab drags and moves
+/// the dragged workspace into the target project.
+private struct ProjectHeaderDropDelegate: DropDelegate {
+    let projectId: UUID
+    let tabManager: TabManager
+    @Binding var draggedTabId: UUID?
+    @Binding var dropIndicator: SidebarDropIndicator?
+    @Binding var isDropTargeted: Bool
+
+    func validateDrop(info: DropInfo) -> Bool {
+        guard info.hasItemsConforming(to: [SidebarTabDragPayload.typeIdentifier]),
+              let draggedTabId,
+              let workspace = tabManager.tabs.first(where: { $0.id == draggedTabId }) else {
+            return false
+        }
+        // Only accept workspaces not already in this project
+        return workspace.projectId != projectId
+    }
+
+    func dropEntered(info: DropInfo) {
+        isDropTargeted = true
+    }
+
+    func dropExited(info: DropInfo) {
+        isDropTargeted = false
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer {
+            draggedTabId = nil
+            dropIndicator = nil
+            isDropTargeted = false
+        }
+        guard let draggedTabId else { return false }
+        #if DEBUG
+        dlog("sidebar.drop.toProject tab=\(draggedTabId.uuidString.prefix(5)) project=\(projectId.uuidString.prefix(5))")
+        #endif
+        tabManager.moveWorkspaceToProject(workspaceId: draggedTabId, projectId: projectId)
+        return true
     }
 }
 
