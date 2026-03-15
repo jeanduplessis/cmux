@@ -200,6 +200,49 @@ git add ghostty
 git commit -m "Update ghostty submodule"
 ```
 
+## Upstream sync
+
+This is a fork of `manaflow-ai/cmux`. The `upstream` remote tracks the upstream repo. Our fork maintains a small number of custom commits rebased on top of upstream.
+
+### Remotes
+
+- `origin` — our fork (`jeanduplessis/cmux`)
+- `upstream` — upstream repo (`manaflow-ai/cmux`)
+
+### Syncing with a new upstream release
+
+When upstream publishes a new release (e.g. a new tag on `manaflow-ai/cmux`):
+
+```bash
+# 1. Fetch upstream refs and tags
+git fetch upstream --tags
+
+# 2. Rebase main onto the latest upstream
+#    (our custom commits are replayed on top)
+git checkout main
+git rebase upstream/main
+
+# 3. Verify the build compiles (tagged derivedDataPath, no launch)
+xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Debug \
+  -destination 'platform=macOS' -derivedDataPath /tmp/cmux-upstream-sync build
+
+# 4. Force-push the rebased main to origin
+git push origin main --force-with-lease
+
+# 5. Clean up
+rm -rf /tmp/cmux-upstream-sync
+```
+
+### Conflict resolution
+
+- If the rebase has conflicts, resolve them in the custom commit(s) and `git rebase --continue`.
+- The most likely conflict areas are files heavily modified by both sides: `ContentView.swift`, `TabManager.swift`, `AppDelegate.swift`, and `project.pbxproj`.
+
+### When to change strategy
+
+- If the fork grows to many custom commits, consider keeping each feature on its own branch and merging upstream into `main` cleanly.
+- If multiple contributors push to the fork and force-pushing `main` becomes disruptive, switch to a merge-based workflow.
+
 ## Release
 
 Use the `/release` command to prepare a new release. This will:
