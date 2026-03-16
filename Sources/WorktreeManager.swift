@@ -160,6 +160,87 @@ enum WorktreeManager {
         return result.exitCode == 0
     }
 
+    // MARK: - Branch Listing
+
+    /// Lists local branches in a repository, sorted by most recent commit date.
+    /// Excludes branches that already have a worktree checked out.
+    /// - Parameter repoPath: Absolute path to the git repository.
+    /// - Returns: Array of branch names (e.g. ["feature-x", "fix-y", "main"]).
+    static func listBranches(repoPath: String) -> [String] {
+        // Get all local branches sorted by most recent commit
+        let result = runGitCommand(
+            directory: repoPath,
+            arguments: [
+                "for-each-ref",
+                "--sort=-committerdate",
+                "--format=%(refname:short)",
+                "refs/heads/"
+            ]
+        )
+
+        guard result.exitCode == 0, let output = result.stdout else { return [] }
+
+        let allBranches = output
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        // Discover branches already checked out in worktrees so we can exclude them
+        let worktreeResult = runGitCommand(
+            directory: repoPath,
+            arguments: ["worktree", "list", "--porcelain"]
+        )
+        var checkedOutBranches = Set<String>()
+        if worktreeResult.exitCode == 0, let wtOutput = worktreeResult.stdout {
+            for info in parseWorktreeList(wtOutput) {
+                if let branch = info.branch {
+                    checkedOutBranches.insert(branch)
+                }
+            }
+        }
+
+        return allBranches.filter { !checkedOutBranches.contains($0) }
+    }
+
+    /// Creates a git worktree for an existing branch (no new branch creation).
+    /// - Parameters:
+    ///   - repoPath: Absolute path to the main git repository checkout.
+    ///   - projectSlug: Slugified project name for the directory structure.
+    ///   - branchName: The existing branch name to check out.
+    /// - Returns: The absolute path to the created worktree directory.
+    /// - Throws: `WorktreeError` if the operation fails.
+    static func createWorktreeFromExistingBranch(
+        repoPath: String,
+        projectSlug: String,
+        branchName: String
+    ) async throws -> String {
+        // Slugify the branch name for the directory path to avoid nested directories
+        // from branch names containing slashes (e.g. "feature/foo" → "feature-foo").
+        let dirName = slugify(branchName)
+        let worktreePath = "\(baseDirectoryPath)/\(projectSlug)/\(dirName)"
+
+        // Ensure the parent directory exists
+        let parentPath = "\(baseDirectoryPath)/\(projectSlug)"
+        try FileManager.default.createDirectory(
+            atPath: parentPath,
+            withIntermediateDirectories: true,
+            attributes: nil
+        )
+
+        // git -C <repoPath> worktree add <worktreePath> <branchName>
+        let result = runGitCommand(
+            directory: repoPath,
+            arguments: ["worktree", "add", worktreePath, branchName]
+        )
+
+        guard result.exitCode == 0 else {
+            let errorMessage = result.stderr ?? "Unknown error"
+            throw WorktreeError.creationFailed(errorMessage)
+        }
+
+        return worktreePath
+    }
+
     // MARK: - Branch Name Generation
 
     /// Slugifies a workspace name into a valid git branch name.

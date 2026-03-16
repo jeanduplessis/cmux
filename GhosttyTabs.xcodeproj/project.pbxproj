@@ -323,6 +323,7 @@
 /* Begin PBXShellScriptBuildPhase section */
 		A5001300A1B2C3D4E5F60719 /* Copy Ghostty Resources */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);

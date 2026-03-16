@@ -2216,7 +2216,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         NSWindow.allowsAutomaticWindowTabbing = false
         disableNativeTabbingShortcut()
-        ensureApplicationIcon()
         if !isRunningUnderXCTest {
             configureUserNotifications()
             installMenuBarVisibilityObserver()
@@ -7985,74 +7984,220 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let tabManager,
               let project = tabManager.project(withId: projectId) else { return }
 
+        let repoPath = project.repositoryPath
+
+        // Fetch available branches off-main before showing the dialog
+        let availableBranches = WorktreeManager.listBranches(repoPath: repoPath)
+
         let alert = NSAlert()
         alert.messageText = String(localized: "dialog.newProjectWorkspace.title", defaultValue: "New Workspace in Project")
-        alert.informativeText = String(
+
+        // Build the accessory view with a mode toggle and stacked input views
+        let containerWidth: CGFloat = 300
+        let segmentedControl = NSSegmentedControl(
+            labels: [
+                String(localized: "dialog.newProjectWorkspace.newBranch", defaultValue: "New Branch"),
+                String(localized: "dialog.newProjectWorkspace.existingBranch", defaultValue: "Existing Branch")
+            ],
+            trackingMode: .selectOne,
+            target: nil,
+            action: nil
+        )
+        segmentedControl.selectedSegment = 0
+        // Disable "Existing Branch" if no branches are available
+        segmentedControl.setEnabled(!availableBranches.isEmpty, forSegment: 1)
+        segmentedControl.frame = NSRect(x: 0, y: 0, width: containerWidth, height: 24)
+
+        let nameInput = NSTextField(string: "")
+        nameInput.placeholderString = String(localized: "dialog.newProjectWorkspace.placeholder", defaultValue: "Workspace name (e.g. Fix auth bug)")
+        nameInput.frame = NSRect(x: 0, y: 0, width: containerWidth, height: 22)
+
+        let branchPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: containerWidth, height: 25), pullsDown: false)
+        for branch in availableBranches {
+            branchPopup.addItem(withTitle: branch)
+        }
+        branchPopup.isHidden = true
+
+        let newBranchMessage = String(
             localized: "dialog.newProjectWorkspace.message",
             defaultValue: "Enter a name for the new workspace. A git branch and worktree will be created automatically."
         )
-        let input = NSTextField(string: "")
-        input.placeholderString = String(localized: "dialog.newProjectWorkspace.placeholder", defaultValue: "Workspace name (e.g. Fix auth bug)")
-        input.frame = NSRect(x: 0, y: 0, width: 300, height: 22)
-        alert.accessoryView = input
+        let existingBranchMessage = String(
+            localized: "dialog.newProjectWorkspace.existingBranchMessage",
+            defaultValue: "Select a branch to check out as a new worktree."
+        )
+
+        let messageLabel = NSTextField(wrappingLabelWithString: newBranchMessage)
+        messageLabel.frame = NSRect(x: 0, y: 0, width: containerWidth, height: 34)
+        messageLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        messageLabel.textColor = .secondaryLabelColor
+
+        // Vertical stack: segmented control → message → input/popup
+        let spacing: CGFloat = 8
+        let totalHeight = segmentedControl.frame.height + spacing + messageLabel.frame.height + spacing + nameInput.frame.height
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: containerWidth, height: totalHeight))
+
+        var yOffset = totalHeight
+
+        yOffset -= segmentedControl.frame.height
+        segmentedControl.frame.origin = NSPoint(x: 0, y: yOffset)
+        container.addSubview(segmentedControl)
+
+        yOffset -= spacing + messageLabel.frame.height
+        messageLabel.frame.origin = NSPoint(x: 0, y: yOffset)
+        container.addSubview(messageLabel)
+
+        yOffset -= spacing + nameInput.frame.height
+        nameInput.frame.origin = NSPoint(x: 0, y: yOffset)
+        container.addSubview(nameInput)
+
+        branchPopup.frame.origin = nameInput.frame.origin
+        branchPopup.frame.size = NSSize(width: containerWidth, height: 25)
+        container.addSubview(branchPopup)
+
+        // Wire up the segmented control to toggle between modes
+        @MainActor class SegmentedHelper: NSObject {
+            let nameInput: NSTextField
+            let branchPopup: NSPopUpButton
+            let messageLabel: NSTextField
+            let newMsg: String
+            let existingMsg: String
+            let alertWindow: NSWindow
+
+            init(nameInput: NSTextField, branchPopup: NSPopUpButton, messageLabel: NSTextField,
+                 newMsg: String, existingMsg: String, alertWindow: NSWindow) {
+                self.nameInput = nameInput
+                self.branchPopup = branchPopup
+                self.messageLabel = messageLabel
+                self.newMsg = newMsg
+                self.existingMsg = existingMsg
+                self.alertWindow = alertWindow
+            }
+
+            @objc func segmentChanged(_ sender: NSSegmentedControl) {
+                let isExisting = sender.selectedSegment == 1
+                nameInput.isHidden = isExisting
+                branchPopup.isHidden = !isExisting
+                messageLabel.stringValue = isExisting ? existingMsg : newMsg
+                if isExisting {
+                    alertWindow.makeFirstResponder(branchPopup)
+                } else {
+                    alertWindow.makeFirstResponder(nameInput)
+                }
+            }
+        }
+
+        alert.accessoryView = container
+        // Remove informativeText since we're showing it in the messageLabel
+        alert.informativeText = ""
         alert.addButton(withTitle: String(localized: "common.create", defaultValue: "Create"))
         alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+
         let alertWindow = alert.window
-        alertWindow.initialFirstResponder = input
+        let helper = SegmentedHelper(
+            nameInput: nameInput,
+            branchPopup: branchPopup,
+            messageLabel: messageLabel,
+            newMsg: newBranchMessage,
+            existingMsg: existingBranchMessage,
+            alertWindow: alertWindow
+        )
+        // Prevent deallocation while the alert is modal
+        objc_setAssociatedObject(alert, "segmentedHelper", helper, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        segmentedControl.target = helper
+        segmentedControl.action = #selector(SegmentedHelper.segmentChanged(_:))
+
+        alertWindow.initialFirstResponder = nameInput
         DispatchQueue.main.async {
-            alertWindow.makeFirstResponder(input)
+            alertWindow.makeFirstResponder(nameInput)
         }
 
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return }
 
-        let workspaceName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !workspaceName.isEmpty else { return }
-
-        let branchSlug = WorktreeManager.slugify(workspaceName)
+        let isExistingBranch = segmentedControl.selectedSegment == 1
         let projectSlug = WorktreeManager.projectSlug(project.name)
-        let repoPath = project.repositoryPath
         let mainBranch = project.mainBranch
         let projId = project.id
 
-        Task { @MainActor [weak self] in
-            // Run git operations off-main to avoid blocking the UI
-            let branchAndPath: (String, String)
-            do {
-                branchAndPath = try await Task.detached {
-                    let branchName = await WorktreeManager.uniqueBranchName(
-                        baseName: branchSlug,
-                        repoPath: repoPath
-                    )
-                    let worktreePath = try await WorktreeManager.createWorktree(
-                        repoPath: repoPath,
-                        projectSlug: projectSlug,
-                        branchName: branchName,
-                        baseBranch: mainBranch
-                    )
-                    return (branchName, worktreePath)
-                }.value
-            } catch {
-                let errorAlert = NSAlert()
-                errorAlert.alertStyle = .warning
-                errorAlert.messageText = String(localized: "dialog.newProjectWorkspace.error.title", defaultValue: "Worktree Creation Failed")
-                errorAlert.informativeText = error.localizedDescription
-                errorAlert.addButton(withTitle: String(localized: "common.ok", defaultValue: "OK"))
-                errorAlert.runModal()
-                return
+        if isExistingBranch {
+            // Existing branch mode: use selected branch from popup
+            guard let selectedBranch = branchPopup.titleOfSelectedItem,
+                  !selectedBranch.isEmpty else { return }
+
+            Task { @MainActor [weak self] in
+                let worktreePath: String
+                do {
+                    worktreePath = try await Task.detached {
+                        try await WorktreeManager.createWorktreeFromExistingBranch(
+                            repoPath: repoPath,
+                            projectSlug: projectSlug,
+                            branchName: selectedBranch
+                        )
+                    }.value
+                } catch {
+                    let errorAlert = NSAlert()
+                    errorAlert.alertStyle = .warning
+                    errorAlert.messageText = String(localized: "dialog.newProjectWorkspace.error.title", defaultValue: "Worktree Creation Failed")
+                    errorAlert.informativeText = error.localizedDescription
+                    errorAlert.addButton(withTitle: String(localized: "common.ok", defaultValue: "OK"))
+                    errorAlert.runModal()
+                    return
+                }
+
+                guard let tabManager = self?.tabManager else { return }
+                tabManager.addWorkspaceToProject(
+                    projectId: projId,
+                    workingDirectory: worktreePath,
+                    title: selectedBranch,
+                    worktreePath: worktreePath,
+                    worktreeBranch: selectedBranch
+                )
             }
+        } else {
+            // New branch mode: create branch from name input
+            let workspaceName = nameInput.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !workspaceName.isEmpty else { return }
 
-            let (branchName, worktreePath) = branchAndPath
+            let branchSlug = WorktreeManager.slugify(workspaceName)
 
-            // Create the workspace on main
-            guard let tabManager = self?.tabManager else { return }
-            tabManager.addWorkspaceToProject(
-                projectId: projId,
-                workingDirectory: worktreePath,
-                title: workspaceName,
-                worktreePath: worktreePath,
-                worktreeBranch: branchName
-            )
+            Task { @MainActor [weak self] in
+                let branchAndPath: (String, String)
+                do {
+                    branchAndPath = try await Task.detached {
+                        let branchName = await WorktreeManager.uniqueBranchName(
+                            baseName: branchSlug,
+                            repoPath: repoPath
+                        )
+                        let worktreePath = try await WorktreeManager.createWorktree(
+                            repoPath: repoPath,
+                            projectSlug: projectSlug,
+                            branchName: branchName,
+                            baseBranch: mainBranch
+                        )
+                        return (branchName, worktreePath)
+                    }.value
+                } catch {
+                    let errorAlert = NSAlert()
+                    errorAlert.alertStyle = .warning
+                    errorAlert.messageText = String(localized: "dialog.newProjectWorkspace.error.title", defaultValue: "Worktree Creation Failed")
+                    errorAlert.informativeText = error.localizedDescription
+                    errorAlert.addButton(withTitle: String(localized: "common.ok", defaultValue: "OK"))
+                    errorAlert.runModal()
+                    return
+                }
+
+                let (branchName, worktreePath) = branchAndPath
+
+                guard let tabManager = self?.tabManager else { return }
+                tabManager.addWorkspaceToProject(
+                    projectId: projId,
+                    workingDirectory: worktreePath,
+                    title: workspaceName,
+                    worktreePath: worktreePath,
+                    worktreeBranch: branchName
+                )
+            }
         }
     }
 
@@ -9923,18 +10068,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if let submenu = item.submenu {
                 disableMenuItemShortcut(in: submenu, action: action)
             }
-        }
-    }
-
-    private func ensureApplicationIcon() {
-        let mode = AppIconSettings.resolvedMode()
-        if mode == .automatic {
-            // Let the asset catalog handle appearance-based icon selection.
-            if let icon = NSImage(named: NSImage.applicationIconName) {
-                NSApplication.shared.applicationIconImage = icon
-            }
-        } else {
-            AppIconSettings.applyIcon(mode)
         }
     }
 
