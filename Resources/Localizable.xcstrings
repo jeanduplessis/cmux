@@ -18237,6 +18237,28 @@
         }
       }
     },
+    "command.toggleGitSidebar.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Layout"
+          }
+        }
+      }
+    },
+    "command.toggleGitSidebar.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Git Sidebar"
+          }
+        }
+      }
+    },
     "command.toggleSidebar.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -30385,6 +30407,94 @@
         }
       }
     },
+    "gitSidebar.close": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close"
+          }
+        }
+      }
+    },
+    "gitSidebar.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Working tree clean"
+          }
+        }
+      }
+    },
+    "gitSidebar.notRepo": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not a git repository"
+          }
+        }
+      }
+    },
+    "gitSidebar.refresh": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh"
+          }
+        }
+      }
+    },
+    "gitSidebar.staged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Staged Changes"
+          }
+        }
+      }
+    },
+    "gitSidebar.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Git"
+          }
+        }
+      }
+    },
+    "gitSidebar.unstaged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Changes"
+          }
+        }
+      }
+    },
+    "gitSidebar.untracked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Untracked Files"
+          }
+        }
+      }
+    },
     "language.system": {
       "extractionState": "manual",
       "localizations": {
@@ -37856,6 +37966,17 @@
           "stringUnit": {
             "state": "translated",
             "value": "Geliştirici Araçlarını Aç/Kapat"
+          }
+        }
+      }
+    },
+    "menu.view.toggleGitSidebar": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Git Sidebar"
           }
         }
       }
@@ -59422,6 +59543,17 @@
         }
       }
     },
+    "shortcut.toggleGitSidebar.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Git Sidebar"
+          }
+        }
+      }
+    },
     "shortcut.togglePaneZoom.label": {
       "extractionState": "manual",
       "localizations": {
@@ -64277,6 +64409,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sistem"
+          }
+        }
+      }
+    },
+    "titlebar.gitSidebar.accessibilityLabel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Git Sidebar"
+          }
+        }
+      }
+    },
+    "titlebar.gitSidebar.tooltip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show or hide the git sidebar"
           }
         }
       }

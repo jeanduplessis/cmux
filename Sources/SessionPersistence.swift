@@ -25,6 +25,16 @@ enum SessionPersistencePolicy {
         return min(max(candidate, minimumSidebarWidth), maximumSidebarWidth)
     }
 
+    static let defaultGitSidebarWidth: Double = 250
+    static let minimumGitSidebarWidth: Double = 180
+    static let maximumGitSidebarWidth: Double = 600
+
+    static func sanitizedGitSidebarWidth(_ candidate: Double?) -> Double {
+        let fallback = defaultGitSidebarWidth
+        guard let candidate, candidate.isFinite else { return fallback }
+        return min(max(candidate, minimumGitSidebarWidth), maximumGitSidebarWidth)
+    }
+
     static func truncatedScrollback(_ text: String?) -> String? {
         guard let text, !text.isEmpty else { return nil }
         if text.count <= maxScrollbackCharactersPerTerminal {
@@ -193,6 +203,11 @@ enum SessionSidebarSelection: String, Codable, Sendable, Equatable {
 struct SessionSidebarSnapshot: Codable, Sendable {
     var isVisible: Bool
     var selection: SessionSidebarSelection
+    var width: Double?
+}
+
+struct SessionGitSidebarSnapshot: Codable, Sendable {
+    var isVisible: Bool
     var width: Double?
 }
 
@@ -365,6 +380,7 @@ struct SessionWindowSnapshot: Codable, Sendable {
     var display: SessionDisplaySnapshot?
     var tabManager: SessionTabManagerSnapshot
     var sidebar: SessionSidebarSnapshot
+    var gitSidebar: SessionGitSidebarSnapshot?
 }
 
 struct AppSessionSnapshot: Codable, Sendable {

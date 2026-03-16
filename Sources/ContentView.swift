@@ -1315,10 +1315,14 @@ struct ContentView: View {
     @EnvironmentObject var notificationStore: TerminalNotificationStore
     @EnvironmentObject var sidebarState: SidebarState
     @EnvironmentObject var sidebarSelectionState: SidebarSelectionState
+    @EnvironmentObject var gitSidebarState: GitSidebarState
+    @StateObject private var gitStatusService = GitStatusService()
+    @State private var gitSidebarWidth: CGFloat = GitSidebarState.defaultWidth
     @State private var sidebarWidth: CGFloat = 200
     @State private var hoveredResizerHandles: Set<SidebarResizerHandle> = []
     @State private var isResizerDragging = false
     @State private var sidebarDragStartWidth: CGFloat?
+    @State private var gitSidebarDragStartWidth: CGFloat?
     @State private var selectedTabIds: Set<UUID> = []
     @State private var mountedWorkspaceIds: [UUID] = []
     @State private var lastSidebarSelectionIndex: Int? = nil
@@ -1948,6 +1952,80 @@ struct ContentView: View {
         .frame(width: sidebarWidth)
     }
 
+    private var gitSidebarView: some View {
+        GitSidebarView(service: gitStatusService, sidebarState: gitSidebarState)
+            .frame(width: gitSidebarWidth)
+    }
+
+    private var gitSidebarResizerOverlay: some View {
+        GeometryReader { proxy in
+            let totalWidth = max(0, proxy.size.width)
+            let dividerX = max(0, totalWidth - gitSidebarWidth)
+            let trailingWidth = max(0, totalWidth - dividerX - SidebarResizeInteraction.hitWidthPerSide * 2)
+
+            HStack(spacing: 0) {
+                Color.clear
+                    .frame(width: max(0, dividerX - SidebarResizeInteraction.hitWidthPerSide))
+                    .allowsHitTesting(false)
+
+                Color.clear
+                    .frame(width: SidebarResizeInteraction.hitWidthPerSide * 2)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                if gitSidebarDragStartWidth == nil {
+                                    gitSidebarDragStartWidth = gitSidebarWidth
+                                }
+                                guard let startWidth = gitSidebarDragStartWidth else { return }
+                                let newWidth = startWidth - value.translation.width
+                                let clamped = min(
+                                    max(newWidth, GitSidebarState.minimumWidth),
+                                    min(GitSidebarState.maximumWidth, totalWidth / 3)
+                                )
+                                gitSidebarWidth = clamped
+                                gitSidebarState.persistedWidth = clamped
+                            }
+                            .onEnded { _ in
+                                gitSidebarDragStartWidth = nil
+                            }
+                    )
+
+                Color.clear
+                    .frame(width: max(0, trailingWidth))
+                    .allowsHitTesting(false)
+            }
+            .frame(width: totalWidth, height: proxy.size.height, alignment: .leading)
+        }
+    }
+
+    private func updateGitSidebarDirectory() {
+        guard gitSidebarState.isVisible else { return }
+        guard let selectedId = tabManager.selectedTabId,
+              let workspace = tabManager.tabs.first(where: { $0.id == selectedId }) else {
+            gitStatusService.updateDirectory(nil)
+            return
+        }
+        // Prefer the focused panel's working directory for accurate per-pane git status,
+        // then fall back to the workspace-level directory.
+        let directory: String
+        if let focusedPanelId = workspace.focusedPanelId,
+           let panelDir = workspace.panelDirectories[focusedPanelId],
+           !panelDir.isEmpty {
+            directory = panelDir
+        } else {
+            directory = workspace.worktreePath ?? workspace.currentDirectory
+        }
+        gitStatusService.updateDirectory(directory)
+    }
+
     /// Space at top of content area for the titlebar. This must be at least the actual titlebar
     /// height; otherwise controls like Bonsplit tab dragging can be interpreted as window drags.
     @State private var titlebarPadding: CGFloat = 32
@@ -2040,6 +2118,7 @@ struct ContentView: View {
             notificationStore: TerminalNotificationStore.shared,
             viewModel: fullscreenControlsViewModel,
             onToggleSidebar: { sidebarState.toggle() },
+            onToggleGitSidebar: { gitSidebarState.toggle() },
             onToggleNotifications: { [fullscreenControlsViewModel] in
                 AppDelegate.shared?.toggleNotificationsPopover(
                     animated: true,
@@ -2186,14 +2265,20 @@ struct ContentView: View {
     private var contentAndSidebarLayout: AnyView {
         let layout: AnyView
         if sidebarBlendMode == SidebarBlendModeOption.withinWindow.rawValue {
-            // Overlay mode: terminal extends full width, sidebar on top
-            // This allows withinWindow blur to see the terminal content
+            // Overlay mode: terminal extends full width, sidebars on top
             layout = AnyView(
                 ZStack(alignment: .leading) {
                     terminalContentWithSidebarDropOverlay
                         .padding(.leading, sidebarState.isVisible ? sidebarWidth : 0)
+                        .padding(.trailing, gitSidebarState.isVisible ? gitSidebarWidth : 0)
                     if sidebarState.isVisible {
                         sidebarView
+                    }
+                    if gitSidebarState.isVisible {
+                        HStack(spacing: 0) {
+                            Spacer()
+                            gitSidebarView
+                        }
                     }
                 }
             )
@@ -2205,6 +2290,9 @@ struct ContentView: View {
                         sidebarView
                     }
                     terminalContentWithSidebarDropOverlay
+                    if gitSidebarState.isVisible {
+                        gitSidebarView
+                    }
                 }
             )
         }
@@ -2214,6 +2302,12 @@ struct ContentView: View {
                 .overlay(alignment: .leading) {
                     if sidebarState.isVisible {
                         sidebarResizerOverlay
+                            .zIndex(1000)
+                    }
+                }
+                .overlay(alignment: .trailing) {
+                    if gitSidebarState.isVisible {
+                        gitSidebarResizerOverlay
                             .zIndex(1000)
                     }
                 }
@@ -2246,6 +2340,10 @@ struct ContentView: View {
             }
             if abs(sidebarState.persistedWidth - restoredWidth) > 0.5 {
                 sidebarState.persistedWidth = restoredWidth
+            }
+            let restoredGitSidebarWidth = GitSidebarState.sanitizedWidth(gitSidebarState.persistedWidth)
+            if abs(gitSidebarWidth - restoredGitSidebarWidth) > 0.5 {
+                gitSidebarWidth = restoredGitSidebarWidth
             }
             if selectedTabIds.isEmpty, let selectedId = tabManager.selectedTabId {
                 selectedTabIds = [selectedId]
@@ -2323,6 +2421,15 @@ struct ContentView: View {
                 lastSidebarSelectionIndex = tabManager.tabs.firstIndex { $0.id == newValue }
             }
             updateTitlebarText()
+            updateGitSidebarDirectory()
+        })
+
+        view = AnyView(view.onChange(of: gitSidebarState.isVisible) { isVisible in
+            if isVisible {
+                updateGitSidebarDirectory()
+            } else {
+                gitStatusService.stop()
+            }
         })
 
         view = AnyView(view.onChange(of: selectedTabIds) { _ in
@@ -2728,7 +2835,8 @@ struct ContentView: View {
                 windowId: windowId,
                 tabManager: tabManager,
                 sidebarState: sidebarState,
-                sidebarSelectionState: sidebarSelectionState
+                sidebarSelectionState: sidebarSelectionState,
+                gitSidebarState: gitSidebarState
             )
             installFileDropOverlay(on: window, tabManager: tabManager)
         }))
@@ -4517,6 +4625,8 @@ struct ContentView: View {
             return .closeWindow
         case "palette.toggleSidebar":
             return .toggleSidebar
+        case "palette.toggleGitSidebar":
+            return .toggleGitSidebar
         case "palette.showNotifications":
             return .showNotifications
         case "palette.jumpUnread":
@@ -4799,6 +4909,14 @@ struct ContentView: View {
                 title: constant(String(localized: "command.toggleSidebar.title", defaultValue: "Toggle Sidebar")),
                 subtitle: constant(String(localized: "command.toggleSidebar.subtitle", defaultValue: "Layout")),
                 keywords: ["toggle", "sidebar", "layout"]
+            )
+        )
+        contributions.append(
+            CommandPaletteCommandContribution(
+                commandId: "palette.toggleGitSidebar",
+                title: constant(String(localized: "command.toggleGitSidebar.title", defaultValue: "Toggle Git Sidebar")),
+                subtitle: constant(String(localized: "command.toggleGitSidebar.subtitle", defaultValue: "Layout")),
+                keywords: ["toggle", "git", "sidebar", "status", "layout"]
             )
         )
         contributions.append(
@@ -5420,6 +5538,9 @@ struct ContentView: View {
         }
         registry.register(commandId: "palette.toggleSidebar") {
             sidebarState.toggle()
+        }
+        registry.register(commandId: "palette.toggleGitSidebar") {
+            gitSidebarState.toggle()
         }
         registry.register(commandId: "palette.triggerFlash") {
             tabManager.triggerFocusFlash()

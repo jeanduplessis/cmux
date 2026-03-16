@@ -18,6 +18,7 @@ struct cmuxApp: App {
     private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
     @AppStorage(SocketControlSettings.appStorageKey) private var socketControlMode = SocketControlSettings.defaultMode.rawValue
     @AppStorage(KeyboardShortcutSettings.Action.toggleSidebar.defaultsKey) private var toggleSidebarShortcutData = Data()
+    @AppStorage(KeyboardShortcutSettings.Action.toggleGitSidebar.defaultsKey) private var toggleGitSidebarShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.newTab.defaultsKey) private var newWorkspaceShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.newWindow.defaultsKey) private var newWindowShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.showNotifications.defaultsKey) private var showNotificationsShortcutData = Data()
@@ -535,6 +536,10 @@ struct cmuxApp: App {
                     }
                 }
 
+                splitCommandButton(title: String(localized: "menu.view.toggleGitSidebar", defaultValue: "Toggle Git Sidebar"), shortcut: toggleGitSidebarMenuShortcut) {
+                    _ = AppDelegate.shared?.toggleGitSidebarInActiveMainWindow()
+                }
+
                 Divider()
 
                 splitCommandButton(title: String(localized: "menu.view.nextSurface", defaultValue: "Next Surface"), shortcut: nextSurfaceMenuShortcut) {
@@ -698,6 +703,10 @@ struct cmuxApp: App {
 
     private var toggleSidebarMenuShortcut: StoredShortcut {
         decodeShortcut(from: toggleSidebarShortcutData, fallback: KeyboardShortcutSettings.Action.toggleSidebar.defaultShortcut)
+    }
+
+    private var toggleGitSidebarMenuShortcut: StoredShortcut {
+        decodeShortcut(from: toggleGitSidebarShortcutData, fallback: KeyboardShortcutSettings.Action.toggleGitSidebar.defaultShortcut)
     }
 
     private var newWorkspaceMenuShortcut: StoredShortcut {

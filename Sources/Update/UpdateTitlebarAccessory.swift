@@ -238,6 +238,7 @@ struct TitlebarControlsView: View {
     @ObservedObject var notificationStore: TerminalNotificationStore
     @ObservedObject var viewModel: TitlebarControlsViewModel
     let onToggleSidebar: () -> Void
+    let onToggleGitSidebar: () -> Void
     let onToggleNotifications: () -> Void
     let onNewTab: () -> Void
     let onNewProject: () -> Void
@@ -330,6 +331,18 @@ struct TitlebarControlsView: View {
             .accessibilityIdentifier("titlebarControl.toggleSidebar")
             .accessibilityLabel(String(localized: "titlebar.sidebar.accessibilityLabel", defaultValue: "Toggle Sidebar"))
             .safeHelp(KeyboardShortcutSettings.Action.toggleSidebar.tooltip(String(localized: "titlebar.sidebar.tooltip", defaultValue: "Show or hide the sidebar")))
+
+            TitlebarControlButton(config: config, action: {
+                #if DEBUG
+                dlog("titlebar.toggleGitSidebar")
+                #endif
+                onToggleGitSidebar()
+            }) {
+                iconLabel(systemName: "sidebar.right", config: config)
+            }
+            .accessibilityIdentifier("titlebarControl.toggleGitSidebar")
+            .accessibilityLabel(String(localized: "titlebar.gitSidebar.accessibilityLabel", defaultValue: "Toggle Git Sidebar"))
+            .safeHelp(KeyboardShortcutSettings.Action.toggleGitSidebar.tooltip(String(localized: "titlebar.gitSidebar.tooltip", defaultValue: "Show or hide the git sidebar")))
 
             TitlebarControlButton(config: config, action: {
                 #if DEBUG
@@ -736,6 +749,7 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
     init(notificationStore: TerminalNotificationStore) {
         self.notificationStore = notificationStore
         let toggleSidebar = { _ = AppDelegate.shared?.sidebarState?.toggle() }
+        let toggleGitSidebar = { _ = AppDelegate.shared?.toggleGitSidebarInActiveMainWindow() }
         let toggleNotifications: () -> Void = { _ = AppDelegate.shared?.toggleNotificationsPopover(animated: true) }
         let newTab = { _ = AppDelegate.shared?.tabManager?.addTab() }
         let newProject: () -> Void = { AppDelegate.shared?.handleNewProjectRequest() }
@@ -745,6 +759,7 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
                 notificationStore: notificationStore,
                 viewModel: viewModel,
                 onToggleSidebar: toggleSidebar,
+                onToggleGitSidebar: toggleGitSidebar,
                 onToggleNotifications: toggleNotifications,
                 onNewTab: newTab,
                 onNewProject: newProject

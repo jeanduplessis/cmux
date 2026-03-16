@@ -102,6 +102,10 @@
 		DA7A10CA710E000000000003 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = DA7A10CA710E000000000001 /* Localizable.xcstrings */; };
 		DA7A10CA710E000000000004 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = DA7A10CA710E000000000002 /* InfoPlist.xcstrings */; };
 		A5001623 /* cmux.sdef in Resources */ = {isa = PBXBuildFile; fileRef = A5001622 /* cmux.sdef */; };
+		G1T00010 /* GitStatusModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = G1T00001 /* GitStatusModel.swift */; };
+		G1T00020 /* GitSidebarState.swift in Sources */ = {isa = PBXBuildFile; fileRef = G1T00002 /* GitSidebarState.swift */; };
+		G1T00030 /* GitStatusService.swift in Sources */ = {isa = PBXBuildFile; fileRef = G1T00003 /* GitStatusService.swift */; };
+		G1T00040 /* GitSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G1T00004 /* GitSidebarView.swift */; };
 			/* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -251,6 +255,10 @@
 					DA7A10CA710E000000000001 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		DA7A10CA710E000000000002 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
 		A5001622 /* cmux.sdef */ = {isa = PBXFileReference; lastKnownFileType = text.sdef; path = cmux.sdef; sourceTree = "<group>"; };
+		G1T00001 /* GitStatusModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitSidebar/GitStatusModel.swift; sourceTree = "<group>"; };
+		G1T00002 /* GitSidebarState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitSidebar/GitSidebarState.swift; sourceTree = "<group>"; };
+		G1T00003 /* GitStatusService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitSidebar/GitStatusService.swift; sourceTree = "<group>"; };
+		G1T00004 /* GitSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitSidebar/GitSidebarView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -417,6 +425,10 @@
 				A5001701 /* Project.swift */,
 				A5001703 /* SidebarItem.swift */,
 				A5001705 /* WorktreeManager.swift */,
+				G1T00001 /* GitStatusModel.swift */,
+				G1T00002 /* GitSidebarState.swift */,
+				G1T00003 /* GitStatusService.swift */,
+				G1T00004 /* GitSidebarView.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -692,6 +704,10 @@
 				A5001700 /* Project.swift in Sources */,
 				A5001702 /* SidebarItem.swift in Sources */,
 				A5001704 /* WorktreeManager.swift in Sources */,
+				G1T00010 /* GitStatusModel.swift in Sources */,
+				G1T00020 /* GitSidebarState.swift in Sources */,
+				G1T00030 /* GitStatusService.swift in Sources */,
+				G1T00040 /* GitSidebarView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
