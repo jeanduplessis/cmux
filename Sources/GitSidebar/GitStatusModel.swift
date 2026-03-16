@@ -38,7 +38,7 @@ enum GitFileStatus: Equatable, Hashable {
     var iconName: String {
         switch self {
         case .added: return "plus.circle.fill"
-        case .modified: return "pencil.circle.fill"
+        case .modified: return "circle.fill"
         case .deleted: return "minus.circle.fill"
         case .renamed: return "arrow.right.circle.fill"
         case .copied: return "doc.on.doc.fill"

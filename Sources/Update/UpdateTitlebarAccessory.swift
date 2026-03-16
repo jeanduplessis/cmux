@@ -1125,6 +1125,7 @@ private struct NotificationPopoverRow: View {
     }
 }
 
+@MainActor
 final class UpdateTitlebarAccessoryController {
     private weak var updateViewModel: UpdateViewModel?
     private var didStart = false
@@ -1164,8 +1165,10 @@ final class UpdateTitlebarAccessoryController {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let window = notification.object as? NSWindow else { return }
-            self?.attachIfNeeded(to: window)
+            MainActor.assumeIsolated {
+                guard let window = notification.object as? NSWindow else { return }
+                self?.attachIfNeeded(to: window)
+            }
         })
 
         observers.append(center.addObserver(
@@ -1173,8 +1176,10 @@ final class UpdateTitlebarAccessoryController {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let window = notification.object as? NSWindow else { return }
-            self?.attachIfNeeded(to: window)
+            MainActor.assumeIsolated {
+                guard let window = notification.object as? NSWindow else { return }
+                self?.attachIfNeeded(to: window)
+            }
         })
 
         // We intentionally do not rely on "window became visible" notifications here:
@@ -1194,15 +1199,17 @@ final class UpdateTitlebarAccessoryController {
         let delays: [TimeInterval] = [0.05, 0.15, 0.3, 0.6, 1.0, 2.0, 3.0]
         for delay in delays {
             let item = DispatchWorkItem { [weak self] in
-                self?.attachToExistingWindows()
+                MainActor.assumeIsolated {
+                    self?.attachToExistingWindows()
 #if DEBUG
-                let env = ProcessInfo.processInfo.environment
-                if env["CMUX_UI_TEST_MODE"] == "1" {
-                    let ids = NSApp.windows.map { $0.identifier?.rawValue ?? "<nil>" }
-                    let delayText = String(format: "%.2f", delay)
-                    UpdateLogStore.shared.append("startup window scan (delay=\(delayText)) count=\(NSApp.windows.count) ids=\(ids.joined(separator: ","))")
-                }
+                    let env = ProcessInfo.processInfo.environment
+                    if env["CMUX_UI_TEST_MODE"] == "1" {
+                        let ids = NSApp.windows.map { $0.identifier?.rawValue ?? "<nil>" }
+                        let delayText = String(format: "%.2f", delay)
+                        UpdateLogStore.shared.append("startup window scan (delay=\(delayText)) count=\(NSApp.windows.count) ids=\(ids.joined(separator: ","))")
+                    }
 #endif
+                }
             }
             startupScanWorkItems.append(item)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
@@ -1222,8 +1229,10 @@ final class UpdateTitlebarAccessoryController {
             if attempts < 40 {
                 pendingAttachRetries[key] = attempts + 1
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak window] in
-                    guard let self, let window else { return }
-                    self.attachIfNeeded(to: window)
+                    MainActor.assumeIsolated {
+                        guard let self, let window else { return }
+                        self.attachIfNeeded(to: window)
+                    }
                 }
             } else {
                 pendingAttachRetries.removeValue(forKey: key)

@@ -1789,6 +1789,31 @@ struct CMUXCLI {
             let response = try sendV1Command("clear_progress --tab=\(wsId)", client: client)
             print(response)
 
+        case "set-agent-pid":
+            let (wsFlag, sapRemaining) = parseOption(commandArgs, name: "--workspace")
+            guard sapRemaining.count >= 2 else {
+                throw CLIError(message: "set-agent-pid requires <key> and <pid>")
+            }
+            let key = sapRemaining[0]
+            let pidStr = sapRemaining[1]
+            guard let pid = Int32(pidStr), pid > 0 else {
+                throw CLIError(message: "set-agent-pid requires a valid positive PID")
+            }
+            let workspaceArg = wsFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let wsId = try resolveWorkspaceId(workspaceArg, client: client)
+            let response = try sendV1Command("set_agent_pid \(socketQuote(key)) \(pidStr) --tab=\(wsId)", client: client)
+            print(response)
+
+        case "clear-agent-pid":
+            let (wsFlag, capRemaining) = parseOption(commandArgs, name: "--workspace")
+            guard let key = capRemaining.first else {
+                throw CLIError(message: "clear-agent-pid requires a <key>")
+            }
+            let workspaceArg = wsFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let wsId = try resolveWorkspaceId(workspaceArg, client: client)
+            let response = try sendV1Command("clear_agent_pid \(socketQuote(key)) --tab=\(wsId)", client: client)
+            print(response)
+
         case "log":
             let (level, r1) = parseOption(commandArgs, name: "--level")
             let (source, r2) = parseOption(r1, name: "--source")
@@ -5308,6 +5333,37 @@ struct CMUXCLI {
 
             Example:
               cmux clear-progress
+            """
+        case "set-agent-pid":
+            return """
+            Usage: cmux set-agent-pid <key> <pid> [flags]
+
+            Register an agent process ID for stale-session detection and OSC
+            notification suppression. The key identifies the agent (e.g.
+            "kilo_code", "claude_code"). The PID is checked periodically by
+            cmux's stale PID sweep — when the process dies, the associated
+            status entry and agent PID registration are automatically cleaned up.
+
+            Flags:
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+
+            Example:
+              cmux set-agent-pid kilo_code 12345
+              cmux set-agent-pid claude_code 67890 --workspace workspace:2
+            """
+        case "clear-agent-pid":
+            return """
+            Usage: cmux clear-agent-pid <key> [flags]
+
+            Unregister an agent process ID. Call this during agent shutdown to
+            clean up the PID registration. If omitted, cmux's stale PID sweep
+            will eventually detect the dead process and clean up automatically.
+
+            Flags:
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+
+            Example:
+              cmux clear-agent-pid kilo_code
             """
         case "log":
             return """
@@ -9559,6 +9615,8 @@ struct CMUXCLI {
           list-status [--workspace <id|ref>]
           set-progress <0.0-1.0> [--label <text>] [--workspace <id|ref>]
           clear-progress [--workspace <id|ref>]
+          set-agent-pid <key> <pid> [--workspace <id|ref>]
+          clear-agent-pid <key> [--workspace <id|ref>]
           log [--level <level>] [--source <name>] [--workspace <id|ref>] [--] <message>
           clear-log [--workspace <id|ref>]
           list-log [--limit <n>] [--workspace <id|ref>]

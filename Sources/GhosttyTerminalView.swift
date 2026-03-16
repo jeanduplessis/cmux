@@ -2454,8 +2454,8 @@ class GhosttyApp {
             }
             if let handle = try? FileHandle(forWritingTo: backgroundLogURL) {
                 defer { try? handle.close() }
-                try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
+                _ = try? handle.seekToEnd()
+                _ = try? handle.write(contentsOf: data)
             }
         }
     }
@@ -4223,7 +4223,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let startX = min(1, xMax)
         let endX = xMax
 
-        let mods = ghostty_input_mods_e(rawValue: GHOSTTY_MODS_NONE.rawValue) ?? GHOSTTY_MODS_NONE
+        let mods = ghostty_input_mods_e(rawValue: GHOSTTY_MODS_NONE.rawValue)
         ghostty_surface_mouse_pos(surface, startX, startY, mods)
         guard ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods) else {
             return false

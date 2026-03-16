@@ -1255,8 +1255,8 @@ final class BrowserPortalAnchorView: NSView {
 
 @MainActor
 final class BrowserPanel: Panel, ObservableObject {
-    /// Shared process pool for cookie sharing across all browser panels
-    private static let sharedProcessPool = WKProcessPool()
+    // NOTE: WKProcessPool was removed — deprecated since macOS 12 with no effect.
+    // Cookie sharing now relies on the shared .default() websiteDataStore.
 
     static let telemetryHookBootstrapScriptSource = """
     (() => {
@@ -1358,10 +1358,10 @@ final class BrowserPanel: Panel, ObservableObject {
     }
 
     private static func isDarkAppearance(
-        appAppearance: NSAppearance? = NSApp?.effectiveAppearance
+        appAppearance: NSAppearance? = nil
     ) -> Bool {
-        guard let appAppearance else { return false }
-        return appAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        guard let resolved = appAppearance ?? NSApp?.effectiveAppearance else { return false }
+        return resolved.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
     private static func resolvedGhosttyBackgroundColor(from notification: Notification? = nil) -> NSColor {
@@ -1383,7 +1383,7 @@ final class BrowserPanel: Panel, ObservableObject {
 
     private static func resolvedBrowserChromeBackgroundColor(
         from notification: Notification? = nil,
-        appAppearance: NSAppearance? = NSApp?.effectiveAppearance
+        appAppearance: NSAppearance? = nil
     ) -> NSColor {
         if isDarkAppearance(appAppearance: appAppearance) {
             return resolvedGhosttyBackgroundColor(from: notification)
@@ -1954,7 +1954,6 @@ final class BrowserPanel: Panel, ObservableObject {
 
     private static func makeWebView() -> CmuxWebView {
         let config = WKWebViewConfiguration()
-        config.processPool = BrowserPanel.sharedProcessPool
         config.mediaTypesRequiringUserActionForPlayback = []
         // Ensure browser cookies/storage persist across navigations and launches.
         // This reduces repeated consent/bot-challenge flows on sites like Google.
@@ -2104,24 +2103,26 @@ final class BrowserPanel: Panel, ObservableObject {
     }
 
     private func beginDownloadActivity() {
-        let apply = {
+        let apply: @MainActor @Sendable () -> Void = { [weak self] in
+            guard let self else { return }
             self.activeDownloadCount += 1
             self.isDownloading = self.activeDownloadCount > 0
         }
         if Thread.isMainThread {
-            apply()
+            MainActor.assumeIsolated { apply() }
         } else {
             DispatchQueue.main.async(execute: apply)
         }
     }
 
     private func endDownloadActivity() {
-        let apply = {
+        let apply: @MainActor @Sendable () -> Void = { [weak self] in
+            guard let self else { return }
             self.activeDownloadCount = max(0, self.activeDownloadCount - 1)
             self.isDownloading = self.activeDownloadCount > 0
         }
         if Thread.isMainThread {
-            apply()
+            MainActor.assumeIsolated { apply() }
         } else {
             DispatchQueue.main.async(execute: apply)
         }

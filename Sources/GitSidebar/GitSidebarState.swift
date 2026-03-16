@@ -11,7 +11,7 @@ final class GitSidebarState: ObservableObject {
     static let minimumWidth: CGFloat = 180
     static let maximumWidth: CGFloat = 600
 
-    init(isVisible: Bool = false, persistedWidth: CGFloat = GitSidebarState.defaultWidth) {
+    init(isVisible: Bool = false, persistedWidth: CGFloat = 250) {
         self.isVisible = isVisible
         self.persistedWidth = Self.sanitizedWidth(persistedWidth)
     }

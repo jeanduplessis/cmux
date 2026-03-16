@@ -106,9 +106,46 @@ Then use:
 notify = ["bash", "~/.local/bin/codex-notify.sh"]
 ```
 
+### Kilo Code (Rich Integration)
+
+cmux ships a full-featured Kilo Code plugin that provides sidebar status, targeted
+notifications, OSC suppression, and agent PID tracking — matching the Claude Code
+integration level.
+
+**Install:**
+
+```bash
+# Copy from this repo
+cp plugins/kilo/cmux-integration.ts ~/.config/kilo/plugins/cmux-integration.ts
+
+# Or symlink for automatic updates
+ln -s /path/to/cmux/plugins/kilo/cmux-integration.ts ~/.config/kilo/plugins/cmux-integration.ts
+```
+
+**What it does:**
+
+| Event | cmux Behavior |
+|-------|---------------|
+| Plugin init | Registers agent PID (enables OSC suppression), sets status to Idle |
+| `tool.execute.before` | Clears notifications, sets status to "Running" (or verbose tool description) |
+| `message.part.updated` | Sets status to "Running" when agent starts responding |
+| `permission.asked` | Sends notification, sets status to "Needs input" |
+| `permission.replied` | Clears notifications, sets status to "Running" |
+| `session.idle` | Sends completion notification, sets status to "Idle" |
+| `session.error` | Sends error notification, sets status to "Error" |
+| Process exit | Clears status, agent PID, and notifications |
+
+**Environment variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `CMUX_KILO_VERBOSE` | Set to any value to show verbose tool descriptions in sidebar status (e.g., "Editing main.ts" instead of "Running") |
+
+The plugin auto-detects cmux via `CMUX_SOCKET_PATH` and is a no-op outside cmux terminals.
+
 ### OpenCode Plugin
 
-Create `.opencode/plugins/cmux-notify.js`:
+Create `~/.config/opencode/plugins/cmux-notify.js`:
 
 ```javascript
 export const CmuxNotificationPlugin = async ({ $, }) => {
@@ -130,6 +167,9 @@ export const CmuxNotificationPlugin = async ({ $, }) => {
 };
 ```
 
+For a richer OpenCode integration (sidebar status, PID tracking), adapt the
+Kilo Code plugin above — the plugin APIs are compatible.
+
 ## Environment Variables
 
 cmux sets these in child shells:
@@ -146,6 +186,10 @@ cmux sets these in child shells:
 cmux notify --title <text> [--subtitle <text>] [--body <text>] [--tab <id|index>] [--panel <id|index>]
 cmux list-notifications
 cmux clear-notifications
+cmux set-status <key> <value> [--icon <name>] [--color <#hex>] [--workspace <id|ref>]
+cmux clear-status <key> [--workspace <id|ref>]
+cmux set-agent-pid <key> <pid> [--workspace <id|ref>]
+cmux clear-agent-pid <key> [--workspace <id|ref>]
 cmux ping
 ```
 

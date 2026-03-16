@@ -436,10 +436,10 @@ struct BrowserPanelView: View {
             logBrowserFocusState(event: "view.onAppear")
 #endif
         }
-        .onChange(of: panel.focusFlashToken) { _ in
+        .onChange(of: panel.focusFlashToken) {
             triggerFocusFlashAnimation()
         }
-        .onChange(of: panel.currentURL) { _ in
+        .onChange(of: panel.currentURL) {
             let addressWasEmpty = omnibarState.buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             syncURLFromPanel()
             // If we auto-focused a blank omnibar but then a URL loads programmatically, move focus
@@ -451,20 +451,20 @@ struct BrowserPanelView: View {
                 setAddressBarFocused(false, reason: "panel.currentURL.loaded")
             }
         }
-        .onChange(of: browserThemeModeRaw) { _ in
+        .onChange(of: browserThemeModeRaw) {
             let normalizedMode = BrowserThemeSettings.mode(for: browserThemeModeRaw)
             if browserThemeModeRaw != normalizedMode.rawValue {
                 browserThemeModeRaw = normalizedMode.rawValue
             }
             panel.setBrowserThemeMode(normalizedMode)
         }
-        .onChange(of: colorScheme) { _ in
+        .onChange(of: colorScheme) {
             panel.refreshAppearanceDrivenColors()
         }
-        .onChange(of: panel.pendingAddressBarFocusRequestId) { _ in
+        .onChange(of: panel.pendingAddressBarFocusRequestId) {
             applyPendingAddressBarFocusRequestIfNeeded()
         }
-        .onChange(of: isFocused) { focused in
+        .onChange(of: isFocused) { _, focused in
 #if DEBUG
             logBrowserFocusState(
                 event: "panelFocus.onChange",
@@ -485,7 +485,7 @@ struct BrowserPanelView: View {
                 isPanelFocusedOverride: focused
             )
         }
-        .onChange(of: addressBarFocused) { focused in
+        .onChange(of: addressBarFocused) { _, focused in
 #if DEBUG
             logBrowserFocusState(
                 event: "addressBarFocus.onChange",

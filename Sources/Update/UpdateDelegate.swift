@@ -12,7 +12,7 @@ enum UpdateFeedResolver {
     }
 }
 
-extension UpdateDriver: SPUUpdaterDelegate {
+extension UpdateDriver: @preconcurrency SPUUpdaterDelegate {
     func feedURLString(for updater: SPUUpdater) -> String? {
 #if DEBUG
         let env = ProcessInfo.processInfo.environment

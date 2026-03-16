@@ -1344,10 +1344,22 @@ class TerminalController {
             // the time a new thread starts the peer may already be gone.
             let peerPid = getPeerPid(clientSocket)
 
-            // Handle client in new thread
-            Thread.detachNewThread { [weak self] in
-                self?.handleClient(clientSocket, peerPid: peerPid)
-            }
+            // Handle client in new thread.
+            // handleClient intentionally runs off-main for socket I/O; it dispatches
+            // to the main actor internally when mutating UI state.
+            let capturedPeerPid = peerPid
+            self.spawnClientHandler(clientSocket, peerPid: capturedPeerPid)
+        }
+    }
+
+    /// Bridge to spawn a client handler thread.
+    /// `handleClient` has historically run off-main for blocking socket I/O
+    /// and dispatches to the main actor internally when mutating UI state.
+    /// The @MainActor isolation warning here is expected — a proper fix requires
+    /// refactoring handleClient into nonisolated socket I/O + main-actor mutations.
+    private nonisolated func spawnClientHandler(_ socket: Int32, peerPid: pid_t?) {
+        Thread.detachNewThread { [self] in
+            self.handleClient(socket, peerPid: peerPid)
         }
     }
 
@@ -4103,7 +4115,7 @@ class TerminalController {
             }
 
             // Socket API must be non-interactive: bypass close-confirmation gating.
-            ws.closePanel(surfaceId, force: true)
+            _ = ws.closePanel(surfaceId, force: true)
             result = .ok(["workspace_id": ws.id.uuidString, "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id), "surface_id": surfaceId.uuidString, "surface_ref": v2Ref(kind: .surface, uuid: surfaceId), "window_id": v2OrNull(v2ResolveWindowId(tabManager: tabManager)?.uuidString), "window_ref": v2Ref(kind: .window, uuid: v2ResolveWindowId(tabManager: tabManager))])
         }
         return result
@@ -5619,9 +5631,9 @@ class TerminalController {
             if shouldActivate {
                 if let targetWindow {
                     targetWindow.makeKeyAndOrderFront(nil)
-                    NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                    NSApp.activate()
                 } else {
-                    NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                    NSApp.activate()
                 }
             }
 
@@ -6093,7 +6105,7 @@ class TerminalController {
             resultLock.unlock()
         }
 
-        let evaluator = {
+        let evaluator: @MainActor @Sendable () -> Void = {
             if preferAsync, #available(macOS 11.0, *) {
                 webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: contentWorld) { result in
                     switch result {
@@ -14521,7 +14533,7 @@ class TerminalController {
             }
 
             // Socket commands must be non-interactive: bypass close-confirmation gating.
-            tab.closePanel(targetSurfaceId, force: true)
+            _ = tab.closePanel(targetSurfaceId, force: true)
             result = "OK"
         }
         return result

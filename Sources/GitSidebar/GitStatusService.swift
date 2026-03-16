@@ -14,8 +14,17 @@ final class GitStatusService: ObservableObject {
     private var debounceWorkItem: DispatchWorkItem?
     private var currentTask: Task<Void, Never>?
 
+    /// Timestamp of the last refresh completion. Used to suppress FSEvents that
+    /// fire as a side-effect of `git status` touching `.git/index`.
+    private var lastRefreshCompletedAt: CFAbsoluteTime = 0
+
+    /// Cooldown period after a refresh completes during which FSEvents are
+    /// ignored. This breaks the feedback loop: git status → updates .git/index
+    /// → FSEvent → git status → …
+    private static let postRefreshCooldown: TimeInterval = 1.0
+
     private static let debounceInterval: TimeInterval = 0.3
-    private nonisolated(unsafe) static let maxDisplayFiles: Int = 500
+    nonisolated private static let maxDisplayFiles: Int = 500
 
     /// Background queue for FSEvents scheduling.
     private static let fsEventQueue = DispatchQueue(
@@ -205,14 +214,20 @@ final class GitStatusService: ObservableObject {
             }
         }
 
+        // Sort each section alphabetically by filename (case-insensitive),
+        // matching VS Code's source control sidebar ordering.
+        let sortByFileName: (GitFileEntry, GitFileEntry) -> Bool = {
+            $0.fileName.localizedCaseInsensitiveCompare($1.fileName) == .orderedAscending
+        }
+
         return GitRepoStatus(
             branch: branch,
             upstream: upstream,
             ahead: ahead,
             behind: behind,
-            staged: staged,
-            unstaged: unstaged,
-            untracked: untracked,
+            staged: staged.sorted(by: sortByFileName),
+            unstaged: unstaged.sorted(by: sortByFileName),
+            untracked: untracked.sorted(by: sortByFileName),
             isGitRepo: true
         )
     }
@@ -353,7 +368,14 @@ final class GitStatusService: ObservableObject {
     // MARK: - Debounced Refresh
 
     /// Schedule a debounced status refresh on the main actor.
+    /// Skips if still within the post-refresh cooldown window (breaks the
+    /// feedback loop caused by `git status` touching `.git/index`).
     fileprivate func scheduleDebouncedRefresh() {
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - lastRefreshCompletedAt < Self.postRefreshCooldown {
+            return
+        }
+
         debounceWorkItem?.cancel()
 
         let workItem = DispatchWorkItem { [weak self] in
@@ -370,6 +392,7 @@ final class GitStatusService: ObservableObject {
     }
 
     /// Perform the actual refresh: fetch status off-main, then publish on main.
+    /// Only publishes when the new status differs from the current one.
     private func performRefresh(repoRoot: String) {
         currentTask?.cancel()
         isLoading = true
@@ -380,8 +403,13 @@ final class GitStatusService: ObservableObject {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self, !Task.isCancelled else { return }
-                self.status = newStatus
+                // Only publish when the status actually changed to avoid
+                // unnecessary SwiftUI view invalidation.
+                if self.status != newStatus {
+                    self.status = newStatus
+                }
                 self.isLoading = false
+                self.lastRefreshCompletedAt = CFAbsoluteTimeGetCurrent()
             }
         }
     }
@@ -401,7 +429,10 @@ private func fsEventCallback(
 ) {
     guard let info = clientCallBackInfo else { return }
 
-    // Check if any event is relevant (skip .git/objects and .git/logs noise).
+    // Check if any event is relevant. Most `.git/` internal changes are noise
+    // (especially `.git/index` which `git status` itself updates). We only care
+    // about working-tree changes and the few git internals that signal user
+    // actions (HEAD change, refs update, index write from `git add`/`commit`).
     let paths = Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue()
     let count = CFArrayGetCount(paths)
     var hasRelevantChange = false
@@ -410,10 +441,22 @@ private func fsEventCallback(
         guard let rawPath = CFArrayGetValueAtIndex(paths, i) else { continue }
         let path = Unmanaged<CFString>.fromOpaque(rawPath).takeUnretainedValue() as String
 
-        // Filter out high-churn internal git paths that don't affect status.
-        if path.contains("/.git/objects/") || path.contains("/.git/logs/") {
+        // Skip all internal `.git/` paths except the few that reflect
+        // meaningful status changes (HEAD, index, refs).
+        if let dotGitRange = path.range(of: "/.git/") {
+            let afterDotGit = path[dotGitRange.upperBound...]
+            // These indicate user actions (branch switch, stage, commit):
+            if afterDotGit == "HEAD"
+                || afterDotGit == "index"
+                || afterDotGit.hasPrefix("refs/") {
+                hasRelevantChange = true
+                break
+            }
+            // Everything else inside .git/ is noise (objects, logs, hooks,
+            // FETCH_HEAD, ORIG_HEAD, lock files, etc.)
             continue
         }
+        // Working-tree change — always relevant.
         hasRelevantChange = true
         break
     }

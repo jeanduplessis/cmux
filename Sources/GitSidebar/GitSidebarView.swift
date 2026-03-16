@@ -61,11 +61,10 @@ private struct GitSidebarHeader: View {
                 .font(.subheadline)
                 .fontWeight(.bold)
 
-            if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.6)
-            }
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.6)
+                .opacity(isLoading ? 1 : 0)
 
             Spacer()
 
@@ -143,20 +142,26 @@ private struct GitSidebarFileList: View {
                         title: String(localized: "gitSidebar.staged", defaultValue: "Staged Changes"),
                         count: status.staged.count,
                         files: status.staged,
-                        accentColor: .green
+                        accentColor: Color.green.opacity(0.7)
                     )
                 }
 
                 if !status.unstaged.isEmpty {
+                    if !status.staged.isEmpty {
+                        Spacer().frame(height: 12)
+                    }
                     GitSidebarSection(
                         title: String(localized: "gitSidebar.unstaged", defaultValue: "Changes"),
                         count: status.unstaged.count,
                         files: status.unstaged,
-                        accentColor: .orange
+                        accentColor: Color.orange.opacity(0.7)
                     )
                 }
 
                 if !status.untracked.isEmpty {
+                    if !status.staged.isEmpty || !status.unstaged.isEmpty {
+                        Spacer().frame(height: 12)
+                    }
                     GitSidebarSection(
                         title: String(localized: "gitSidebar.untracked", defaultValue: "Untracked Files"),
                         count: status.untracked.count,
@@ -226,11 +231,11 @@ private struct GitFileRow: View {
     let file: GitFileEntry
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .top, spacing: 6) {
             Image(systemName: file.status.iconName)
                 .font(.system(size: 10))
                 .foregroundStyle(colorForStatus(file.status))
-                .frame(width: 14)
+                .frame(width: 14, height: 15, alignment: .center)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(file.fileName)
@@ -252,20 +257,21 @@ private struct GitFileRow: View {
             Text(file.status.symbol)
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .foregroundStyle(colorForStatus(file.status))
+                .frame(height: 15, alignment: .center)
         }
         .padding(.horizontal, 12)
-        .frame(height: 28)
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
     }
 
     private func colorForStatus(_ status: GitFileStatus) -> Color {
         switch status {
-        case .added: return .green
-        case .modified: return .orange
-        case .deleted: return .red
-        case .renamed: return .blue
-        case .copied: return .cyan
-        case .typeChanged: return .purple
+        case .added: return Color.green.opacity(0.7)
+        case .modified: return Color.orange.opacity(0.7)
+        case .deleted: return Color.red.opacity(0.7)
+        case .renamed: return Color.blue.opacity(0.7)
+        case .copied: return Color.cyan.opacity(0.7)
+        case .typeChanged: return Color.purple.opacity(0.7)
         case .untracked: return .secondary
         }
     }

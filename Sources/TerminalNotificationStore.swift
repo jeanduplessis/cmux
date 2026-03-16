@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import UserNotifications
+@preconcurrency import UserNotifications
 import Bonsplit
 
 // UNUserNotificationCenter.removeDeliveredNotifications(withIdentifiers:) and
@@ -702,7 +702,9 @@ final class TerminalNotificationStore: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.refreshDockBadge()
+            MainActor.assumeIsolated {
+                self?.refreshDockBadge()
+            }
         }
         refreshDockBadge()
         refreshAuthorizationStatus()
@@ -803,17 +805,19 @@ final class TerminalNotificationStore: ObservableObject {
                 trigger: nil
             )
 
-            self.center.add(request) { error in
-                if let error {
-                    NSLog("Failed to schedule test notification: \(error)")
-                    self.logAuthorization("settings test schedule failed error=\(error.localizedDescription)")
-                } else {
-                    self.logAuthorization("settings test schedule succeeded")
-                    NotificationSoundSettings.runCustomCommand(
-                        title: content.title,
-                        subtitle: content.subtitle,
-                        body: content.body
-                    )
+            self.center.add(request) { [weak self] error in
+                DispatchQueue.main.async {
+                    if let error {
+                        NSLog("Failed to schedule test notification: \(error)")
+                        self?.logAuthorization("settings test schedule failed error=\(error.localizedDescription)")
+                    } else {
+                        self?.logAuthorization("settings test schedule succeeded")
+                        NotificationSoundSettings.runCustomCommand(
+                            title: content.title,
+                            subtitle: content.subtitle,
+                            body: content.body
+                        )
+                    }
                 }
             }
         }
@@ -1032,14 +1036,17 @@ final class TerminalNotificationStore: ObservableObject {
                 trigger: nil
             )
 
+            let soundTitle = content.title
+            let soundSubtitle = content.subtitle
+            let soundBody = content.body
             self.center.add(request) { error in
                 if let error {
                     NSLog("Failed to schedule notification: \(error)")
                 } else {
                     NotificationSoundSettings.runCustomCommand(
-                        title: content.title,
-                        subtitle: content.subtitle,
-                        body: content.body
+                        title: soundTitle,
+                        subtitle: soundSubtitle,
+                        body: soundBody
                     )
                 }
             }

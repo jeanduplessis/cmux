@@ -2401,7 +2401,7 @@ struct ContentView: View {
             }
         })
 
-        view = AnyView(view.onChange(of: tabManager.selectedTabId) { newValue in
+        view = AnyView(view.onChange(of: tabManager.selectedTabId) { _, newValue in
 #if DEBUG
             if let snapshot = tabManager.debugCurrentWorkspaceSwitchSnapshot() {
                 let dtMs = (CACurrentMediaTime() - snapshot.startedAt) * 1000
@@ -2424,7 +2424,7 @@ struct ContentView: View {
             updateGitSidebarDirectory()
         })
 
-        view = AnyView(view.onChange(of: gitSidebarState.isVisible) { isVisible in
+        view = AnyView(view.onChange(of: gitSidebarState.isVisible) { _, isVisible in
             if isVisible {
                 updateGitSidebarDirectory()
             } else {
@@ -2432,11 +2432,11 @@ struct ContentView: View {
             }
         })
 
-        view = AnyView(view.onChange(of: selectedTabIds) { _ in
+        view = AnyView(view.onChange(of: selectedTabIds) {
             syncSidebarSelectedWorkspaceIds()
         })
 
-        view = AnyView(view.onChange(of: tabManager.isWorkspaceCycleHot) { _ in
+        view = AnyView(view.onChange(of: tabManager.isWorkspaceCycleHot) {
 #if DEBUG
             if let snapshot = tabManager.debugCurrentWorkspaceSwitchSnapshot() {
                 let dtMs = (CACurrentMediaTime() - snapshot.startedAt) * 1000
@@ -2450,7 +2450,7 @@ struct ContentView: View {
             reconcileMountedWorkspaceIds()
         })
 
-        view = AnyView(view.onChange(of: retiringWorkspaceId) { _ in
+        view = AnyView(view.onChange(of: retiringWorkspaceId) {
             reconcileMountedWorkspaceIds()
         })
 
@@ -2687,11 +2687,11 @@ struct ContentView: View {
             }
         }))
 
-        view = AnyView(view.onChange(of: bgGlassTintHex) { _ in
+        view = AnyView(view.onChange(of: bgGlassTintHex) {
             updateWindowGlassTint()
         })
 
-        view = AnyView(view.onChange(of: bgGlassTintOpacity) { _ in
+        view = AnyView(view.onChange(of: bgGlassTintOpacity) {
             updateWindowGlassTint()
         })
 
@@ -2718,7 +2718,7 @@ struct ContentView: View {
             updateSidebarResizerBandState()
         })
 
-        view = AnyView(view.onChange(of: sidebarWidth) { _ in
+        view = AnyView(view.onChange(of: sidebarWidth) {
             let sanitized = normalizedSidebarWidth(sidebarWidth)
             if abs(sidebarWidth - sanitized) > 0.5 {
                 sidebarWidth = sanitized
@@ -2733,12 +2733,12 @@ struct ContentView: View {
             updateSidebarResizerBandState()
         })
 
-        view = AnyView(view.onChange(of: sidebarState.isVisible) { _ in
+        view = AnyView(view.onChange(of: sidebarState.isVisible) {
             TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronizeForAllWindows()
             updateSidebarResizerBandState()
         })
 
-        view = AnyView(view.onChange(of: sidebarState.persistedWidth) { newValue in
+        view = AnyView(view.onChange(of: sidebarState.persistedWidth) { _, newValue in
             let sanitized = normalizedSidebarWidth(newValue)
             if abs(newValue - sanitized) > 0.5 {
                 sidebarState.persistedWidth = sanitized
@@ -3287,7 +3287,7 @@ struct ContentView: View {
                 ),
                 anchor: commandPaletteScrollTargetAnchor
             )
-            .onChange(of: commandPaletteSelectedResultIndex) { _ in
+            .onChange(of: commandPaletteSelectedResultIndex) {
                 updateCommandPaletteScrollTarget(resultCount: visibleResults.count, animated: true)
             }
 
@@ -3326,7 +3326,7 @@ struct ContentView: View {
             updateCommandPaletteScrollTarget(resultCount: commandPaletteVisibleResults.count, animated: false)
             syncCommandPaletteDebugStateForObservedWindow()
         }
-        .onChange(of: commandPaletteCurrentSearchFingerprint) { _ in
+        .onChange(of: commandPaletteCurrentSearchFingerprint) {
             Task { @MainActor in
                 // Let the query-state transition settle first so the forced corpus refresh
                 // cannot rebuild the old command list after deleting the ">" prefix.
@@ -3339,7 +3339,7 @@ struct ContentView: View {
                 syncCommandPaletteDebugStateForObservedWindow()
             }
         }
-        .onChange(of: commandPaletteResultsRevision) { _ in
+        .onChange(of: commandPaletteResultsRevision) {
             let resultIDs = cachedCommandPaletteResults.map(\.id)
             commandPaletteSelectedResultIndex = Self.commandPaletteResolvedSelectionIndex(
                 preferredCommandID: commandPaletteSelectionAnchorCommandID,
@@ -3354,7 +3354,7 @@ struct ContentView: View {
             }
             syncCommandPaletteDebugStateForObservedWindow()
         }
-        .onChange(of: commandPaletteSelectedResultIndex) { _ in
+        .onChange(of: commandPaletteSelectedResultIndex) {
             syncCommandPaletteDebugStateForObservedWindow()
         }
     }
@@ -8028,7 +8028,7 @@ struct VerticalTabsSidebar: View {
                 reason: "sidebar_disappear"
             )
         }
-        .onChange(of: draggedTabId) { newDraggedTabId in
+        .onChange(of: draggedTabId) { _, newDraggedTabId in
             SidebarDragLifecycleNotification.postStateDidChange(
                 tabId: newDraggedTabId,
                 reason: "drag_state_change"
@@ -10228,8 +10228,10 @@ enum SidebarWorkspaceShortcutHintMetrics {
 /// when the parent ForEach rebuilds with unchanged values.
 private struct ProjectHeaderView: View, Equatable {
     nonisolated static func == (lhs: ProjectHeaderView, rhs: ProjectHeaderView) -> Bool {
-        lhs.project === rhs.project &&
-        lhs.childCount == rhs.childCount
+        MainActor.assumeIsolated {
+            lhs.project === rhs.project &&
+            lhs.childCount == rhs.childCount
+        }
     }
 
     let tabManager: TabManager
@@ -10441,18 +10443,20 @@ private struct TabItemView: View, Equatable {
     // Closures, Bindings, and object references are excluded from ==
     // because they're recreated every parent eval but don't affect rendering.
     nonisolated static func == (lhs: TabItemView, rhs: TabItemView) -> Bool {
-        lhs.tab === rhs.tab &&
-        lhs.index == rhs.index &&
-        lhs.isActive == rhs.isActive &&
-        lhs.workspaceShortcutDigit == rhs.workspaceShortcutDigit &&
-        lhs.canCloseWorkspace == rhs.canCloseWorkspace &&
-        lhs.accessibilityWorkspaceCount == rhs.accessibilityWorkspaceCount &&
-        lhs.unreadCount == rhs.unreadCount &&
-        lhs.latestNotificationText == rhs.latestNotificationText &&
-        lhs.rowSpacing == rhs.rowSpacing &&
-        lhs.showsModifierShortcutHints == rhs.showsModifierShortcutHints &&
-        lhs.isProjectChild == rhs.isProjectChild &&
-        lhs.projectWorkspaceKind == rhs.projectWorkspaceKind
+        MainActor.assumeIsolated {
+            lhs.tab === rhs.tab &&
+            lhs.index == rhs.index &&
+            lhs.isActive == rhs.isActive &&
+            lhs.workspaceShortcutDigit == rhs.workspaceShortcutDigit &&
+            lhs.canCloseWorkspace == rhs.canCloseWorkspace &&
+            lhs.accessibilityWorkspaceCount == rhs.accessibilityWorkspaceCount &&
+            lhs.unreadCount == rhs.unreadCount &&
+            lhs.latestNotificationText == rhs.latestNotificationText &&
+            lhs.rowSpacing == rhs.rowSpacing &&
+            lhs.showsModifierShortcutHints == rhs.showsModifierShortcutHints &&
+            lhs.isProjectChild == rhs.isProjectChild &&
+            lhs.projectWorkspaceKind == rhs.projectWorkspaceKind
+        }
     }
 
     // Use plain references instead of @EnvironmentObject to avoid subscribing
@@ -10915,13 +10919,19 @@ private struct TabItemView: View, Equatable {
         )
         .padding(.horizontal, 6)
         .padding(.leading, isProjectChild ? 16 : 0)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.06))
+                .frame(height: 1)
+                .padding(.horizontal, isProjectChild ? 28 : 12)
+        }
         .background {
             GeometryReader { proxy in
                 Color.clear
                     .onAppear {
                         rowHeight = max(proxy.size.height, 1)
                     }
-                    .onChange(of: proxy.size.height) { newHeight in
+                    .onChange(of: proxy.size.height) { _, newHeight in
                         rowHeight = max(newHeight, 1)
                     }
             }
@@ -11927,7 +11937,7 @@ private struct SidebarMetadataMarkdownBlockRow: View {
         .contentShape(Rectangle())
         .onTapGesture { onFocus() }
         .onAppear(perform: renderMarkdown)
-        .onChange(of: block.markdown) { _ in
+        .onChange(of: block.markdown) {
             renderMarkdown()
         }
     }

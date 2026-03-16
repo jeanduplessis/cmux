@@ -1833,7 +1833,7 @@ func shouldSuppressWindowMoveForFolderDrag(window: NSWindow, event: NSEvent) -> 
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUserNotificationCenterDelegate, NSMenuItemValidation {
     static var shared: AppDelegate?
 
     private static let cachedIsRunningUnderXCTest = detectRunningUnderXCTest(ProcessInfo.processInfo.environment)
@@ -3337,11 +3337,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     ) {
         guard snapshot != nil || removeWhenEmpty || persistedGeometryData != nil else { return }
 
-        let writeBlock = {
+        let geometryKey = Self.persistedWindowGeometryDefaultsKey
+        let writeBlock: @Sendable () -> Void = {
             if let persistedGeometryData {
                 UserDefaults.standard.set(
                     persistedGeometryData,
-                    forKey: Self.persistedWindowGeometryDefaultsKey
+                    forKey: geometryKey
                 )
             }
             if let snapshot {
@@ -3484,7 +3485,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 queue: .main
             ) { [weak self] note in
                 guard let self, let closing = note.object as? NSWindow else { return }
-                self.unregisterMainWindow(closing)
+                MainActor.assumeIsolated {
+                    self.unregisterMainWindow(closing)
+                }
             }
         }
         commandPaletteVisibilityByWindowId[windowId] = false
@@ -4583,7 +4586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         destinationPanelId: UUID,
         destinationManager: TabManager
     ) {
-        let reassert: () -> Void = { [weak self, weak destinationManager] in
+        let reassert: @MainActor @Sendable () -> Void = { [weak self, weak destinationManager] in
             guard let self, let destinationManager else { return }
             guard let workspace = destinationManager.tabs.first(where: { $0.id == destinationWorkspaceId }),
                   workspace.panels[destinationPanelId] != nil else {
@@ -5737,7 +5740,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             SettingsWindowController.shared.show(navigationTarget: target)
         },
         activateApplication: @MainActor () -> Void = {
-            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            NSApp.activate()
         }
     ) {
 #if DEBUG
@@ -7673,7 +7676,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.scheduleSplitButtonTooltipRefreshAcrossWorkspaces()
+            MainActor.assumeIsolated {
+                self?.scheduleSplitButtonTooltipRefreshAcrossWorkspaces()
+            }
         }
     }
 
@@ -7710,7 +7715,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.refreshGhosttyGotoSplitShortcuts()
+            MainActor.assumeIsolated {
+                self?.refreshGhosttyGotoSplitShortcuts()
+            }
         }
     }
 
@@ -7932,7 +7939,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func handleNewProjectRequest() {
-        guard let tabManager else { return }
+        guard tabManager != nil else { return }
 
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -10224,7 +10231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if !app.isTerminated {
                 _ = app.forceTerminate()
             }
-            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            NSApp.activate()
         }
     }
 
@@ -10298,7 +10305,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             queue: .main
         ) { [weak self] note in
             guard let self, let window = note.object as? NSWindow else { return }
-            self.setActiveMainWindow(window)
+            MainActor.assumeIsolated {
+                self.setActiveMainWindow(window)
+            }
         }
     }
 
@@ -10310,14 +10319,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self else { return }
-            guard let panelId = notification.object as? UUID else { return }
-            self.browserPanel(for: panelId)?.beginSuppressWebViewFocusForAddressBar()
-            self.browserAddressBarFocusedPanelId = panelId
-            self.stopBrowserOmnibarSelectionRepeat()
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard let panelId = notification.object as? UUID else { return }
+                self.browserPanel(for: panelId)?.beginSuppressWebViewFocusForAddressBar()
+                self.browserAddressBarFocusedPanelId = panelId
+                self.stopBrowserOmnibarSelectionRepeat()
 #if DEBUG
-            dlog("addressBar FOCUS panelId=\(panelId.uuidString.prefix(8))")
+                dlog("addressBar FOCUS panelId=\(panelId.uuidString.prefix(8))")
 #endif
+            }
         }
 
         browserAddressBarBlurObserver = NotificationCenter.default.addObserver(
@@ -10325,15 +10336,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self else { return }
-            guard let panelId = notification.object as? UUID else { return }
-            self.browserPanel(for: panelId)?.endSuppressWebViewFocusForAddressBar()
-            if self.browserAddressBarFocusedPanelId == panelId {
-                self.browserAddressBarFocusedPanelId = nil
-                self.stopBrowserOmnibarSelectionRepeat()
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard let panelId = notification.object as? UUID else { return }
+                self.browserPanel(for: panelId)?.endSuppressWebViewFocusForAddressBar()
+                if self.browserAddressBarFocusedPanelId == panelId {
+                    self.browserAddressBarFocusedPanelId = nil
+                    self.stopBrowserOmnibarSelectionRepeat()
 #if DEBUG
-                dlog("addressBar BLUR panelId=\(panelId.uuidString.prefix(8))")
+                    dlog("addressBar BLUR panelId=\(panelId.uuidString.prefix(8))")
 #endif
+                }
             }
         }
     }
@@ -10666,7 +10679,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         window.makeKeyAndOrderFront(nil)
         // Improve reliability across Spaces / when other helper panels are key.
-        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        NSApp.activate()
     }
 
     private func markReadIfFocused(
