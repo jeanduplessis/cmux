@@ -106,7 +106,8 @@
 		G1T00020 /* GitSidebarState.swift in Sources */ = {isa = PBXBuildFile; fileRef = G1T00002 /* GitSidebarState.swift */; };
 		G1T00030 /* GitStatusService.swift in Sources */ = {isa = PBXBuildFile; fileRef = G1T00003 /* GitStatusService.swift */; };
 		G1T00040 /* GitSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G1T00004 /* GitSidebarView.swift */; };
-			/* End PBXBuildFile section */
+		G1T00050 /* GitPreviewWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = G1T00005 /* GitPreviewWindowController.swift */; };
+		/* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
 		A5001020 /* Embed Frameworks */ = {
@@ -259,6 +260,7 @@
 		G1T00002 /* GitSidebarState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitSidebar/GitSidebarState.swift; sourceTree = "<group>"; };
 		G1T00003 /* GitStatusService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitSidebar/GitStatusService.swift; sourceTree = "<group>"; };
 		G1T00004 /* GitSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitSidebar/GitSidebarView.swift; sourceTree = "<group>"; };
+		G1T00005 /* GitPreviewWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitSidebar/GitPreviewWindowController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -429,6 +431,7 @@
 				G1T00002 /* GitSidebarState.swift */,
 				G1T00003 /* GitStatusService.swift */,
 				G1T00004 /* GitSidebarView.swift */,
+				G1T00005 /* GitPreviewWindowController.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -708,6 +711,7 @@
 				G1T00020 /* GitSidebarState.swift in Sources */,
 				G1T00030 /* GitStatusService.swift in Sources */,
 				G1T00040 /* GitSidebarView.swift in Sources */,
+				G1T00050 /* GitPreviewWindowController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

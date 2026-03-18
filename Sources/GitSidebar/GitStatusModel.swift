@@ -64,6 +64,13 @@ struct GitFileEntry: Identifiable, Equatable, Hashable {
     let status: GitFileStatus
     let area: GitStagingArea
 
+    /// Child file paths (relative to this directory) for untracked directory entries.
+    /// Empty for regular file entries.
+    var children: [String] = []
+
+    /// Whether the children list was truncated (directory contains more than the display limit).
+    var childrenTruncated: Bool = false
+
     var fileName: String {
         (path as NSString).lastPathComponent
     }

@@ -1,11 +1,26 @@
 import SwiftUI
 import AppKit
 
+// MARK: - File Action Callbacks
+
+/// Callbacks for file row interactions in the Git sidebar.
+struct GitSidebarFileActions {
+    /// Show `git blame` for the given file path (relative to repo root).
+    var onBlame: (_ filePath: String) -> Void = { _ in }
+    /// Show `git diff` for the given file. `staged` indicates index vs worktree diff.
+    var onDiff: (_ filePath: String, _ staged: Bool) -> Void = { _, _ in }
+    /// Show diff for an untracked file (diff --no-index /dev/null).
+    var onDiffUntracked: (_ filePath: String) -> Void = { _ in }
+    /// Copy the relative file path to the pasteboard.
+    var onCopyPath: (_ filePath: String) -> Void = { _ in }
+}
+
 // MARK: - Main View
 
 struct GitSidebarView: View {
     @ObservedObject var service: GitStatusService
     @ObservedObject var sidebarState: GitSidebarState
+    var fileActions: GitSidebarFileActions = GitSidebarFileActions()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,7 +55,7 @@ struct GitSidebarView: View {
                     )
                     Divider()
                 }
-                GitSidebarFileList(status: service.status)
+                GitSidebarFileList(status: service.status, fileActions: fileActions)
             }
         }
         .background(GitSidebarBackdrop().ignoresSafeArea())
@@ -133,6 +148,7 @@ private struct GitSidebarBranchBar: View {
 
 private struct GitSidebarFileList: View {
     let status: GitRepoStatus
+    let fileActions: GitSidebarFileActions
 
     var body: some View {
         ScrollView {
@@ -142,7 +158,8 @@ private struct GitSidebarFileList: View {
                         title: String(localized: "gitSidebar.staged", defaultValue: "Staged Changes"),
                         count: status.staged.count,
                         files: status.staged,
-                        accentColor: Color.green.opacity(0.7)
+                        accentColor: Color.green.opacity(0.7),
+                        fileActions: fileActions
                     )
                 }
 
@@ -154,7 +171,8 @@ private struct GitSidebarFileList: View {
                         title: String(localized: "gitSidebar.unstaged", defaultValue: "Changes"),
                         count: status.unstaged.count,
                         files: status.unstaged,
-                        accentColor: Color.orange.opacity(0.7)
+                        accentColor: Color.orange.opacity(0.7),
+                        fileActions: fileActions
                     )
                 }
 
@@ -166,7 +184,8 @@ private struct GitSidebarFileList: View {
                         title: String(localized: "gitSidebar.untracked", defaultValue: "Untracked Files"),
                         count: status.untracked.count,
                         files: status.untracked,
-                        accentColor: .secondary
+                        accentColor: .secondary,
+                        fileActions: fileActions
                     )
                 }
             }
@@ -182,6 +201,7 @@ private struct GitSidebarSection: View {
     let count: Int
     let files: [GitFileEntry]
     let accentColor: Color
+    let fileActions: GitSidebarFileActions
 
     @State private var isExpanded: Bool = true
 
@@ -218,7 +238,17 @@ private struct GitSidebarSection: View {
             // File rows
             if isExpanded {
                 ForEach(files) { file in
-                    GitFileRow(file: file)
+                    GitFileRow(file: file, fileActions: fileActions)
+
+                    // Show child files for untracked directory entries
+                    if !file.children.isEmpty {
+                        ForEach(file.children, id: \.self) { child in
+                            GitDirectoryChildRow(name: child)
+                        }
+                        if file.childrenTruncated {
+                            GitDirectoryChildRow(name: "…")
+                        }
+                    }
                 }
             }
         }
@@ -229,6 +259,9 @@ private struct GitSidebarSection: View {
 
 private struct GitFileRow: View {
     let file: GitFileEntry
+    let fileActions: GitSidebarFileActions
+
+    @State private var isHovered: Bool = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
@@ -254,14 +287,72 @@ private struct GitFileRow: View {
 
             Spacer()
 
-            Text(file.status.symbol)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(colorForStatus(file.status))
-                .frame(height: 15, alignment: .center)
+            // Hover action icons replace the status symbol on hover.
+            ZStack {
+                // Status letter (visible when not hovered)
+                Text(file.status.symbol)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(colorForStatus(file.status))
+                    .frame(height: 15, alignment: .center)
+                    .opacity(isHovered ? 0 : 1)
+
+                // Action icons (visible on hover)
+                HStack(spacing: 2) {
+                    if canShowBlame {
+                        GitFileActionButton(
+                            systemImage: "clock",
+                            help: String(localized: "gitSidebar.action.blame", defaultValue: "Show Blame"),
+                            action: { fileActions.onBlame(file.path) }
+                        )
+                    }
+
+                    if canShowDiff {
+                        GitFileActionButton(
+                            systemImage: "arrow.left.arrow.right",
+                            help: String(localized: "gitSidebar.action.diff", defaultValue: "Show Diff"),
+                            action: {
+                                switch file.area {
+                                case .staged:
+                                    fileActions.onDiff(file.path, true)
+                                case .unstaged:
+                                    fileActions.onDiff(file.path, false)
+                                case .untracked:
+                                    fileActions.onDiffUntracked(file.path)
+                                }
+                            }
+                        )
+                    }
+
+                    GitFileActionButton(
+                        systemImage: "doc.on.clipboard",
+                        help: String(localized: "gitSidebar.action.copyPath", defaultValue: "Copy Relative Path"),
+                        action: {
+                            fileActions.onCopyPath(file.path)
+                        }
+                    )
+                }
+                .opacity(isHovered ? 1 : 0)
+            }
+            .animation(.easeInOut(duration: 0.12), value: isHovered)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 2)
         .contentShape(Rectangle())
+        .background(isHovered ? Color.primary.opacity(0.04) : Color.clear)
+        .cornerRadius(3)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+
+    /// Blame is available for tracked files (not deleted, not untracked).
+    private var canShowBlame: Bool {
+        file.status != .deleted && file.area != .untracked
+    }
+
+    /// Diff is available for all file areas.
+    private var canShowDiff: Bool {
+        true
     }
 
     private func colorForStatus(_ status: GitFileStatus) -> Color {
@@ -274,6 +365,62 @@ private struct GitFileRow: View {
         case .typeChanged: return Color.purple.opacity(0.7)
         case .untracked: return .secondary
         }
+    }
+}
+
+// MARK: - Directory Child Row
+
+/// Indented row showing a child file inside an untracked directory.
+private struct GitDirectoryChildRow: View {
+    let name: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            // Indent to align with file names in GitFileRow (icon width + spacing)
+            Color.clear.frame(width: 14)
+
+            Text(name)
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 1)
+    }
+}
+
+// MARK: - File Action Button
+
+/// Small icon button used for hover actions on file rows.
+private struct GitFileActionButton: View {
+    let systemImage: String
+    let help: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10))
+                .foregroundStyle(isHovered ? .primary : .secondary)
+                .frame(width: 16, height: 15, alignment: .center)
+                .background(
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.primary.opacity(isHovered ? 0.1 : 0))
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .backport.pointerStyle(.link)
+        .animation(.easeInOut(duration: 0.1), value: isHovered)
     }
 }
 

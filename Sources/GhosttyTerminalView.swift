@@ -2525,6 +2525,11 @@ final class TerminalSurface: Identifiable, ObservableObject {
     private let surfaceContext: ghostty_surface_context_e
     private let configTemplate: ghostty_surface_config_s?
     private let workingDirectory: String?
+    /// Custom command to run instead of the default shell. When set,
+    /// the surface runs this command via `/bin/sh -c` and keeps the
+    /// terminal alive after the process exits (scrollable viewer).
+    private let command: String?
+    private let waitAfterCommand: Bool
     var requestedWorkingDirectory: String? { workingDirectory }
     private var additionalEnvironment: [String: String]
     let hostedView: GhosttySurfaceScrollView
@@ -2597,7 +2602,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         context: ghostty_surface_context_e,
         configTemplate: ghostty_surface_config_s?,
         workingDirectory: String? = nil,
-        additionalEnvironment: [String: String] = [:]
+        additionalEnvironment: [String: String] = [:],
+        command: String? = nil,
+        waitAfterCommand: Bool = false
     ) {
         self.id = UUID()
         self.tabId = tabId
@@ -2605,6 +2612,8 @@ final class TerminalSurface: Identifiable, ObservableObject {
         self.configTemplate = configTemplate
         self.workingDirectory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.additionalEnvironment = additionalEnvironment
+        self.command = command
+        self.waitAfterCommand = waitAfterCommand
         // Match Ghostty's own SurfaceView: ensure a non-zero initial frame so the backing layer
         // has non-zero bounds and the renderer can initialize without presenting a blank/stretched
         // intermediate frame on the first real resize.
@@ -3098,13 +3107,31 @@ final class TerminalSurface: Identifiable, ObservableObject {
             }
         }
 
+        // Set command and wait_after_command before creating the surface.
+        // The withCString closures keep pointers alive during ghostty_surface_new.
+        // When command is set, Ghostty auto-enables wait_after_command; we still
+        // respect the caller's explicit value so it can be overridden in the future.
+        let applyCommandAndCreate = {
+            if self.waitAfterCommand {
+                surfaceConfig.wait_after_command = true
+            }
+            if let command = self.command, !command.isEmpty {
+                command.withCString { cCommand in
+                    surfaceConfig.command = cCommand
+                    createSurface()
+                }
+            } else {
+                createSurface()
+            }
+        }
+
         if let workingDirectory, !workingDirectory.isEmpty {
             workingDirectory.withCString { cWorkingDir in
                 surfaceConfig.working_directory = cWorkingDir
-                createSurface()
+                applyCommandAndCreate()
             }
         } else {
-            createSurface()
+            applyCommandAndCreate()
         }
 
         if surface == nil {

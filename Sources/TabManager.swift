@@ -815,14 +815,15 @@ class TabManager: ObservableObject {
 
     // MARK: - Project Management
 
-    /// Computed sidebar items list that produces a flat list from the tabs array,
-    /// inserting project headers at the position of their first child workspace.
-    /// The ordering derives from `tabs` — projects appear at the position of their
-    /// first child workspace in the tabs array.
+    /// Computed sidebar items list that produces a flat list from the tabs array.
+    /// Projects (with their child workspaces) always appear first, followed by
+    /// standalone workspaces that are not part of any project.
+    /// Within each section the ordering derives from `tabs`.
     var sidebarItems: [SidebarItem] {
         let projectLookup = Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0) })
-        var items: [SidebarItem] = []
-        items.reserveCapacity(tabs.count + projects.count)
+        var projectItems: [SidebarItem] = []
+        var standaloneItems: [SidebarItem] = []
+        projectItems.reserveCapacity(tabs.count + projects.count)
         var emittedProjectIds: Set<UUID> = []
 
         for workspace in tabs {
@@ -831,18 +832,20 @@ class TabManager: ObservableObject {
                 // Emit project header before its first child
                 if !emittedProjectIds.contains(projectId) {
                     emittedProjectIds.insert(projectId)
-                    items.append(.project(project))
+                    projectItems.append(.project(project))
                 }
                 // Emit child workspace only if the project is expanded
                 if project.isExpanded {
-                    items.append(.projectWorkspace(workspace, project: project))
+                    projectItems.append(.projectWorkspace(workspace, project: project))
                 }
             } else {
-                items.append(.standaloneWorkspace(workspace))
+                standaloneItems.append(.standaloneWorkspace(workspace))
             }
         }
 
-        return items
+        // Projects first, then standalone workspaces below
+        projectItems.append(contentsOf: standaloneItems)
+        return projectItems
     }
 
     /// Look up a project by ID.
@@ -1693,6 +1696,10 @@ class TabManager: ObservableObject {
         if let projectId = workspace.projectId,
            let project = project(withId: projectId) {
             project.removeWorkspaceId(workspace.id)
+            // Remove orphaned projects so the directory can be reused
+            if project.workspaceIds.isEmpty {
+                removeProject(projectId: projectId)
+            }
         }
 
         AppDelegate.shared?.notificationStore?.clearNotifications(forTabId: workspace.id)

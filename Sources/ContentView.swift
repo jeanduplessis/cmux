@@ -1323,6 +1323,7 @@ struct ContentView: View {
     @State private var isResizerDragging = false
     @State private var sidebarDragStartWidth: CGFloat?
     @State private var gitSidebarDragStartWidth: CGFloat?
+    @State private var gitPreviewController: GitPreviewWindowController?
     @State private var selectedTabIds: Set<UUID> = []
     @State private var mountedWorkspaceIds: [UUID] = []
     @State private var lastSidebarSelectionIndex: Int? = nil
@@ -1953,8 +1954,45 @@ struct ContentView: View {
     }
 
     private var gitSidebarView: some View {
-        GitSidebarView(service: gitStatusService, sidebarState: gitSidebarState)
-            .frame(width: gitSidebarWidth)
+        GitSidebarView(
+            service: gitStatusService,
+            sidebarState: gitSidebarState,
+            fileActions: gitSidebarFileActions
+        )
+        .frame(width: gitSidebarWidth)
+    }
+
+    private var gitSidebarFileActions: GitSidebarFileActions {
+        // Capture the service reference (not the current repoRoot value) so that
+        // closures always read the live repo root at invocation time.
+        let service = gitStatusService
+        return GitSidebarFileActions(
+            onBlame: { [weak service] filePath in
+                guard let repoRoot = service?.repoRoot else { return }
+                self.gitPreviewOrCreate().showBlame(filePath: filePath, repoRoot: repoRoot)
+            },
+            onDiff: { [weak service] filePath, staged in
+                guard let repoRoot = service?.repoRoot else { return }
+                self.gitPreviewOrCreate().showDiff(filePath: filePath, staged: staged, repoRoot: repoRoot)
+            },
+            onDiffUntracked: { [weak service] filePath in
+                guard let repoRoot = service?.repoRoot else { return }
+                self.gitPreviewOrCreate().showDiffUntracked(filePath: filePath, repoRoot: repoRoot)
+            },
+            onCopyPath: { filePath in
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(filePath, forType: .string)
+            }
+        )
+    }
+
+    private func gitPreviewOrCreate() -> GitPreviewWindowController {
+        if let existing = gitPreviewController {
+            return existing
+        }
+        let controller = GitPreviewWindowController(parentWindow: observedWindow)
+        gitPreviewController = controller
+        return controller
     }
 
     private var gitSidebarResizerOverlay: some View {
@@ -2429,6 +2467,8 @@ struct ContentView: View {
                 updateGitSidebarDirectory()
             } else {
                 gitStatusService.stop()
+                gitPreviewController?.dismiss()
+                gitPreviewController = nil
             }
         })
 
@@ -7912,7 +7952,9 @@ struct VerticalTabsSidebar: View {
                             .frame(height: trafficLightPadding)
 
                         LazyVStack(spacing: tabRowSpacing) {
-                            ForEach(tabManager.sidebarItems) { item in
+                            let sidebarItems = tabManager.sidebarItems
+                            let lastProjectChildIds = Self.lastProjectChildIds(in: sidebarItems)
+                            ForEach(sidebarItems) { item in
                                 switch item {
                                 case .project(let project):
                                     ProjectHeaderView(
@@ -7954,6 +7996,7 @@ struct VerticalTabsSidebar: View {
                                         showsModifierShortcutHints: modifierKeyMonitor.isModifierPressed,
                                         isProjectChild: item.isIndented,
                                         projectWorkspaceKind: item.projectWorkspaceKind,
+                                        isLastProjectChild: lastProjectChildIds.contains(item.id),
                                         dragAutoScrollController: dragAutoScrollController,
                                         draggedTabId: $draggedTabId,
                                         dropIndicator: $dropIndicator
@@ -8059,6 +8102,25 @@ struct VerticalTabsSidebar: View {
     private func debugShortSidebarTabId(_ id: UUID?) -> String {
         guard let id else { return "nil" }
         return String(id.uuidString.prefix(5))
+    }
+
+    /// Returns the set of sidebar item IDs that are the last project workspace child
+    /// before a non-child item (project header, standalone workspace, or end of list).
+    static func lastProjectChildIds(in items: [SidebarItem]) -> Set<UUID> {
+        var result = Set<UUID>()
+        for i in items.indices {
+            guard case .projectWorkspace(_, let currentProject) = items[i] else { continue }
+            let isLast = (i + 1 >= items.count) || {
+                if case .projectWorkspace(_, let nextProject) = items[i + 1] {
+                    return nextProject.id != currentProject.id
+                }
+                return true
+            }()
+            if isLast {
+                result.insert(items[i].id)
+            }
+        }
+        return result
     }
 }
 
@@ -10241,6 +10303,8 @@ private struct ProjectHeaderView: View, Equatable {
     @Binding var dropIndicator: SidebarDropIndicator?
     @State private var isHovering = false
     @State private var isDropTargeted = false
+    @State private var isHomeButtonHovered = false
+    @State private var isPlusButtonHovered = false
     @Environment(\.colorScheme) private var colorScheme
 
     /// Folder icon color — uses the project's custom color if set, otherwise a muted accent.
@@ -10274,21 +10338,77 @@ private struct ProjectHeaderView: View, Equatable {
 
             Spacer()
 
-            // Child workspace count badge
-            if childCount > 0 {
-                Text("\(childCount)")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(.secondary.opacity(0.7))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(
-                        Capsule()
-                            .fill(Color.secondary.opacity(0.12))
-                    )
+            // Hover action: swap child count badge for action buttons on hover.
+            ZStack {
+                // Child workspace count badge (visible when not hovered)
+                if childCount > 0 {
+                    Text("\(childCount)")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(.secondary.opacity(0.7))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.12))
+                        )
+                        .opacity(isHovering ? 0 : 1)
+                }
+
+                HStack(spacing: 2) {
+                    // Open workspace at project root (visible on hover)
+                    Button(action: {
+                        tabManager.addWorkspaceToProject(
+                            projectId: project.id,
+                            workingDirectory: project.repositoryPath,
+                            title: project.mainBranch
+                        )
+                    }) {
+                        Image(systemName: "house")
+                            .font(.system(size: 10))
+                            .foregroundStyle(isHomeButtonHovered ? .primary : .secondary)
+                            .frame(width: 16, height: 15, alignment: .center)
+                            .background(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color.primary.opacity(isHomeButtonHovered ? 0.1 : 0))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(String(localized: "projectHeader.openRoot", defaultValue: "Open Workspace at Project Root"))
+                    .contentShape(Rectangle())
+                    .onHover { hovering in isHomeButtonHovered = hovering }
+                    .backport.pointerStyle(.link)
+                    .animation(.easeInOut(duration: 0.1), value: isHomeButtonHovered)
+
+                    // Add workspace button (visible on hover)
+                    Button(action: {
+                        NotificationCenter.default.post(
+                            name: .projectNewWorkspaceRequested,
+                            object: nil,
+                            userInfo: ["projectId": project.id]
+                        )
+                    }) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10))
+                            .foregroundStyle(isPlusButtonHovered ? .primary : .secondary)
+                            .frame(width: 16, height: 15, alignment: .center)
+                            .background(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color.primary.opacity(isPlusButtonHovered ? 0.1 : 0))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(String(localized: "projectHeader.addWorkspace", defaultValue: "New Workspace in Project"))
+                    .contentShape(Rectangle())
+                    .onHover { hovering in isPlusButtonHovered = hovering }
+                    .backport.pointerStyle(.link)
+                    .animation(.easeInOut(duration: 0.1), value: isPlusButtonHovered)
+                }
+                .opacity(isHovering ? 1 : 0)
             }
+            .animation(.easeInOut(duration: 0.12), value: isHovering)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.15)) {
@@ -10300,7 +10420,7 @@ private struct ProjectHeaderView: View, Equatable {
         }
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(isDropTargeted ? Color.accentColor.opacity(0.18) : (isHovering ? Color.primary.opacity(0.05) : Color.clear))
+                .fill(isDropTargeted ? Color.accentColor.opacity(0.18) : (isHovering ? Color.primary.opacity(0.08) : Color.primary.opacity(0.03)))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 4)
@@ -10455,7 +10575,8 @@ private struct TabItemView: View, Equatable {
             lhs.rowSpacing == rhs.rowSpacing &&
             lhs.showsModifierShortcutHints == rhs.showsModifierShortcutHints &&
             lhs.isProjectChild == rhs.isProjectChild &&
-            lhs.projectWorkspaceKind == rhs.projectWorkspaceKind
+            lhs.projectWorkspaceKind == rhs.projectWorkspaceKind &&
+            lhs.isLastProjectChild == rhs.isLastProjectChild
         }
     }
 
@@ -10480,10 +10601,12 @@ private struct TabItemView: View, Equatable {
     let showsModifierShortcutHints: Bool
     let isProjectChild: Bool
     let projectWorkspaceKind: ProjectWorkspaceKind?
+    let isLastProjectChild: Bool
     let dragAutoScrollController: SidebarDragAutoScrollController
     @Binding var draggedTabId: UUID?
     @Binding var dropIndicator: SidebarDropIndicator?
     @State private var isHovering = false
+    @State private var isCloseButtonHovered = false
     @State private var rowHeight: CGFloat = 1
     @AppStorage(ShortcutHintDebugSettings.sidebarHintXKey) private var sidebarShortcutHintXOffset = ShortcutHintDebugSettings.defaultSidebarHintX
     @AppStorage(ShortcutHintDebugSettings.sidebarHintYKey) private var sidebarShortcutHintYOffset = ShortcutHintDebugSettings.defaultSidebarHintY
@@ -10704,13 +10827,21 @@ private struct TabItemView: View, Equatable {
                     }) {
                         Image(systemName: "xmark")
                             .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(activeSecondaryColor(0.7))
+                            .foregroundColor(isCloseButtonHovered ? .primary : activeSecondaryColor(0.7))
+                            .frame(width: 16, height: 16, alignment: .center)
+                            .background(
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color.primary.opacity(isCloseButtonHovered ? 0.1 : 0))
+                            )
                     }
                     .buttonStyle(.plain)
                     .safeHelp(KeyboardShortcutSettings.Action.closeWorkspace.tooltip(closeWorkspaceTooltip))
                     .frame(width: 16, height: 16, alignment: .center)
                     .opacity(showCloseButton && !showsWorkspaceShortcutHint ? 1 : 0)
                     .allowsHitTesting(showCloseButton && !showsWorkspaceShortcutHint)
+                    .onHover { hovering in isCloseButtonHovered = hovering }
+                    .backport.pointerStyle(.link)
+                    .animation(.easeInOut(duration: 0.1), value: isCloseButtonHovered)
 
                     if showsWorkspaceShortcutHint, let workspaceShortcutLabel {
                         Text(workspaceShortcutLabel)
@@ -10920,10 +11051,12 @@ private struct TabItemView: View, Equatable {
         .padding(.horizontal, 6)
         .padding(.leading, isProjectChild ? 16 : 0)
         .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.06))
-                .frame(height: 1)
-                .padding(.horizontal, isProjectChild ? 28 : 12)
+            if !isLastProjectChild {
+                Rectangle()
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.06))
+                    .frame(height: 1)
+                    .padding(.horizontal, isProjectChild ? 28 : 12)
+            }
         }
         .background {
             GeometryReader { proxy in

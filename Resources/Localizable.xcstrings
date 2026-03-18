@@ -30495,6 +30495,72 @@
         }
       }
     },
+    "gitSidebar.action.blame": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Blame"
+          }
+        }
+      }
+    },
+    "gitSidebar.action.diff": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Diff"
+          }
+        }
+      }
+    },
+    "gitSidebar.action.copyPath": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Relative Path"
+          }
+        }
+      }
+    },
+    "gitPreview.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Git Preview"
+          }
+        }
+      }
+    },
+    "gitPreview.blame.prefix": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Blame"
+          }
+        }
+      }
+    },
+    "gitPreview.diff.prefix": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diff"
+          }
+        }
+      }
+    },
     "language.system": {
       "extractionState": "manual",
       "localizations": {

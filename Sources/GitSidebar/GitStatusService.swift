@@ -156,7 +156,61 @@ final class GitStatusService: ObservableObject {
         guard result.exitCode == 0 else {
             return .notARepo
         }
-        return parseStatus(result.stdout)
+        let status = parseStatus(result.stdout)
+        let expandedUntracked = expandUntrackedDirectories(status.untracked, repoRoot: repoRoot)
+        return GitRepoStatus(
+            branch: status.branch,
+            upstream: status.upstream,
+            ahead: status.ahead,
+            behind: status.behind,
+            staged: status.staged,
+            unstaged: status.unstaged,
+            untracked: expandedUntracked,
+            isGitRepo: true
+        )
+    }
+
+    /// Maximum number of child files to display for an untracked directory.
+    private static let maxDirectoryChildren = 10
+
+    /// For untracked entries that are directories (path ends with `/`), enumerate
+    /// the files inside and attach them as `children` on the entry.
+    private nonisolated static func expandUntrackedDirectories(
+        _ entries: [GitFileEntry],
+        repoRoot: String
+    ) -> [GitFileEntry] {
+        entries.map { entry in
+            guard entry.path.hasSuffix("/") else { return entry }
+            let dirURL = URL(fileURLWithPath: repoRoot)
+                .appendingPathComponent(entry.path, isDirectory: true)
+            guard let enumerator = FileManager.default.enumerator(
+                at: dirURL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { return entry }
+
+            var childPaths: [String] = []
+            var truncated = false
+            while let fileURL = enumerator.nextObject() as? URL {
+                guard let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                      resourceValues.isRegularFile == true else { continue }
+                if childPaths.count >= maxDirectoryChildren {
+                    truncated = true
+                    break
+                }
+                // Path relative to the directory entry itself
+                let relativePath = fileURL.path.replacingOccurrences(
+                    of: dirURL.path + "/",
+                    with: ""
+                )
+                childPaths.append(relativePath)
+            }
+
+            var expanded = entry
+            expanded.children = childPaths.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            expanded.childrenTruncated = truncated
+            return expanded
+        }
     }
 
     /// Parse `git status --porcelain=v2 --branch` output.
