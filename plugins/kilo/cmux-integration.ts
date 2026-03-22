@@ -189,12 +189,27 @@ function getTabNumber(workspace: string | undefined): number | null {
     const data = JSON.parse(output);
     const workspaces: any[] = data?.workspaces ?? [];
     const wsUpper = workspace.toUpperCase();
-    for (const ws of workspaces) {
-      const id = (ws.id ?? "").toUpperCase();
-      if (id === wsUpper) {
-        cachedTabNumber = (ws.index ?? 0) + 1; // 1-based
-        return cachedTabNumber;
-      }
+
+    // Find the current workspace and its project
+    const current = workspaces.find(
+      (ws: any) => (ws.id ?? "").toUpperCase() === wsUpper,
+    );
+    if (!current) return null;
+
+    // Filter to workspaces in the same project (ordered by global index)
+    const projectId = current.project_id;
+    const siblings = projectId
+      ? workspaces
+          .filter((ws: any) => ws.project_id === projectId)
+          .sort((a: any, b: any) => (a.index ?? 0) - (b.index ?? 0))
+      : workspaces;
+
+    const posInProject = siblings.findIndex(
+      (ws: any) => (ws.id ?? "").toUpperCase() === wsUpper,
+    );
+    if (posInProject >= 0) {
+      cachedTabNumber = posInProject + 1; // 1-based
+      return cachedTabNumber;
     }
   } catch {
     // ignore
