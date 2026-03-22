@@ -1734,11 +1734,12 @@ struct CMUXCLI {
             let (icon, r1) = parseOption(commandArgs, name: "--icon")
             let (color, r2) = parseOption(r1, name: "--color")
             let (wsFlag, r3) = parseOption(r2, name: "--workspace")
-            guard r3.count >= 2 else {
+            let (surfaceFlag, r4) = parseOption(r3, name: "--surface")
+            guard r4.count >= 2 else {
                 throw CLIError(message: "set-status requires <key> and <value>")
             }
-            let key = r3[0]
-            let value = r3.dropFirst().joined(separator: " ")
+            let key = r4[0]
+            let value = r4.dropFirst().joined(separator: " ")
             guard !value.isEmpty else {
                 throw CLIError(message: "set-status requires a non-empty value")
             }
@@ -1748,17 +1749,23 @@ struct CMUXCLI {
             if let icon { socketCmd += " --icon=\(socketQuote(icon))" }
             if let color { socketCmd += " --color=\(socketQuote(color))" }
             socketCmd += " --tab=\(wsId)"
+            let surfaceArg = surfaceFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            if let surfaceArg { socketCmd += " --panel=\(surfaceArg)" }
             let response = try sendV1Command(socketCmd, client: client)
             print(response)
 
         case "clear-status":
-            let (wsFlag, csRemaining) = parseOption(commandArgs, name: "--workspace")
+            let (wsFlag, csR1) = parseOption(commandArgs, name: "--workspace")
+            let (surfaceFlag, csRemaining) = parseOption(csR1, name: "--surface")
             guard let key = csRemaining.first else {
                 throw CLIError(message: "clear-status requires a <key>")
             }
             let workspaceArg = wsFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
             let wsId = try resolveWorkspaceId(workspaceArg, client: client)
-            let response = try sendV1Command("clear_status \(key) --tab=\(wsId)", client: client)
+            var clearCmd = "clear_status \(key) --tab=\(wsId)"
+            let surfaceArg = surfaceFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            if let surfaceArg { clearCmd += " --panel=\(surfaceArg)" }
+            let response = try sendV1Command(clearCmd, client: client)
             print(response)
 
         case "list-status":
@@ -1790,7 +1797,8 @@ struct CMUXCLI {
             print(response)
 
         case "set-agent-pid":
-            let (wsFlag, sapRemaining) = parseOption(commandArgs, name: "--workspace")
+            let (wsFlag, sapR1) = parseOption(commandArgs, name: "--workspace")
+            let (surfaceFlag, sapRemaining) = parseOption(sapR1, name: "--surface")
             guard sapRemaining.count >= 2 else {
                 throw CLIError(message: "set-agent-pid requires <key> and <pid>")
             }
@@ -1801,17 +1809,24 @@ struct CMUXCLI {
             }
             let workspaceArg = wsFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
             let wsId = try resolveWorkspaceId(workspaceArg, client: client)
-            let response = try sendV1Command("set_agent_pid \(socketQuote(key)) \(pidStr) --tab=\(wsId)", client: client)
+            var pidCmd = "set_agent_pid \(socketQuote(key)) \(pidStr) --tab=\(wsId)"
+            let surfaceArg = surfaceFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            if let surfaceArg { pidCmd += " --panel=\(surfaceArg)" }
+            let response = try sendV1Command(pidCmd, client: client)
             print(response)
 
         case "clear-agent-pid":
-            let (wsFlag, capRemaining) = parseOption(commandArgs, name: "--workspace")
+            let (wsFlag, capR1) = parseOption(commandArgs, name: "--workspace")
+            let (surfaceFlag, capRemaining) = parseOption(capR1, name: "--surface")
             guard let key = capRemaining.first else {
                 throw CLIError(message: "clear-agent-pid requires a <key>")
             }
             let workspaceArg = wsFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
             let wsId = try resolveWorkspaceId(workspaceArg, client: client)
-            let response = try sendV1Command("clear_agent_pid \(socketQuote(key)) --tab=\(wsId)", client: client)
+            var capCmd = "clear_agent_pid \(socketQuote(key)) --tab=\(wsId)"
+            let surfaceArg = surfaceFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            if let surfaceArg { capCmd += " --panel=\(surfaceArg)" }
+            let response = try sendV1Command(capCmd, client: client)
             print(response)
 
         case "log":
@@ -5274,10 +5289,15 @@ struct CMUXCLI {
             pills in the sidebar tab row. Use a unique key so different tools
             (e.g. "claude_code", "build") can manage their own entries.
 
+            When --surface is provided (or $CMUX_SURFACE_ID is set), the status
+            entry is scoped to the specific terminal pane. Multiple agents in
+            different panes within the same workspace each get their own entry.
+
             Flags:
               --icon <name>          Icon name (e.g. "sparkle", "hammer")
               --color <#hex>         Pill color (e.g. "#ff9500")
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+              --surface <id>         Target surface/pane (default: $CMUX_SURFACE_ID)
 
             Example:
               cmux set-status build "compiling" --icon hammer --color "#ff9500"
@@ -5287,10 +5307,12 @@ struct CMUXCLI {
             return """
             Usage: cmux clear-status <key> [flags]
 
-            Remove a sidebar status entry by key.
+            Remove a sidebar status entry by key. When --surface is provided,
+            removes the per-surface entry instead of the workspace-level one.
 
             Flags:
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+              --surface <id>         Target surface/pane (default: $CMUX_SURFACE_ID)
 
             Example:
               cmux clear-status build
@@ -5344,8 +5366,12 @@ struct CMUXCLI {
             cmux's stale PID sweep — when the process dies, the associated
             status entry and agent PID registration are automatically cleaned up.
 
+            When --surface is provided, the PID is registered per-surface so
+            multiple agents in different panes are tracked independently.
+
             Flags:
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+              --surface <id>         Target surface/pane (default: $CMUX_SURFACE_ID)
 
             Example:
               cmux set-agent-pid kilo_code 12345
@@ -5361,6 +5387,7 @@ struct CMUXCLI {
 
             Flags:
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+              --surface <id>         Target surface/pane (default: $CMUX_SURFACE_ID)
 
             Example:
               cmux clear-agent-pid kilo_code
@@ -9610,13 +9637,13 @@ struct CMUXCLI {
           claude-hook <session-start|stop|notification> [--workspace <id|ref>] [--surface <id|ref>]
 
           # sidebar metadata commands
-          set-status <key> <value> [--icon <name>] [--color <#hex>] [--workspace <id|ref>]
-          clear-status <key> [--workspace <id|ref>]
+          set-status <key> <value> [--icon <name>] [--color <#hex>] [--workspace <id|ref>] [--surface <id>]
+          clear-status <key> [--workspace <id|ref>] [--surface <id>]
           list-status [--workspace <id|ref>]
           set-progress <0.0-1.0> [--label <text>] [--workspace <id|ref>]
           clear-progress [--workspace <id|ref>]
-          set-agent-pid <key> <pid> [--workspace <id|ref>]
-          clear-agent-pid <key> [--workspace <id|ref>]
+          set-agent-pid <key> <pid> [--workspace <id|ref>] [--surface <id>]
+          clear-agent-pid <key> [--workspace <id|ref>] [--surface <id>]
           log [--level <level>] [--source <name>] [--workspace <id|ref>] [--] <message>
           clear-log [--workspace <id|ref>]
           list-log [--limit <n>] [--workspace <id|ref>]

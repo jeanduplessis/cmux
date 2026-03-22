@@ -1050,6 +1050,7 @@ class TabManager: ObservableObject {
 
     private func sweepStaleAgentPIDs() {
         for tab in tabs {
+            // Sweep workspace-level agent PIDs
             var keysToRemove: [String] = []
             for (key, pid) in tab.agentPIDs {
                 guard pid > 0 else {
@@ -1072,6 +1073,37 @@ class TabManager: ObservableObject {
                 // Also clear stale notifications (e.g. "Doing well, thanks!")
                 // left behind when Claude was killed without SessionEnd firing.
                 AppDelegate.shared?.notificationStore?.clearNotifications(forTabId: tab.id)
+            }
+
+            // Sweep per-panel agent PIDs
+            var panelsToClean: [UUID] = []
+            for (panelId, panelPids) in tab.panelAgentPIDs {
+                var panelKeysToRemove: [String] = []
+                for (key, pid) in panelPids {
+                    guard pid > 0 else {
+                        panelKeysToRemove.append(key)
+                        continue
+                    }
+                    errno = 0
+                    if kill(pid, 0) == -1, POSIXErrorCode(rawValue: errno) == .ESRCH {
+                        panelKeysToRemove.append(key)
+                    }
+                }
+                if !panelKeysToRemove.isEmpty {
+                    for key in panelKeysToRemove {
+                        tab.panelStatusEntries[panelId]?.removeValue(forKey: key)
+                        tab.panelAgentPIDs[panelId]?.removeValue(forKey: key)
+                    }
+                    if tab.panelStatusEntries[panelId]?.isEmpty == true {
+                        tab.panelStatusEntries.removeValue(forKey: panelId)
+                    }
+                    if tab.panelAgentPIDs[panelId]?.isEmpty == true {
+                        panelsToClean.append(panelId)
+                    }
+                }
+            }
+            for panelId in panelsToClean {
+                tab.panelAgentPIDs.removeValue(forKey: panelId)
             }
         }
     }

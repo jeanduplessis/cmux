@@ -202,7 +202,7 @@ fileprivate struct UpdateAvailableView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(String(localized: "update.releaseNotes.tooltip", defaultValue: "View Release Notes"))
+                .safeHelp(String(localized: "update.releaseNotes.tooltip", defaultValue: "View Release Notes"))
             }
         }
     }

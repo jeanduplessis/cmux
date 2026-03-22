@@ -128,6 +128,138 @@ final class GitStatusService: ObservableObject {
         }
     }
 
+    // MARK: - File Operations
+
+    /// Stage a single file: `git add -- <path>`.
+    func stageFile(_ path: String) {
+        guard let repoRoot else { return }
+        currentTask = Task { [weak self] in
+            let result = Self.runGitCommand(directory: repoRoot, arguments: ["add", "--", path])
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if result.exitCode == 0 { self?.refresh() }
+            }
+        }
+    }
+
+    /// Unstage a single file: `git restore --staged -- <path>`.
+    func unstageFile(_ path: String) {
+        guard let repoRoot else { return }
+        currentTask = Task { [weak self] in
+            let result = Self.runGitCommand(directory: repoRoot, arguments: ["restore", "--staged", "--", path])
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if result.exitCode == 0 { self?.refresh() }
+            }
+        }
+    }
+
+    /// Discard unstaged changes to a tracked file: `git restore -- <path>`.
+    func discardFile(_ path: String) {
+        guard let repoRoot else { return }
+        currentTask = Task { [weak self] in
+            let result = Self.runGitCommand(directory: repoRoot, arguments: ["restore", "--", path])
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if result.exitCode == 0 { self?.refresh() }
+            }
+        }
+    }
+
+    /// Delete an untracked file from the working tree (moves to Trash).
+    func deleteUntrackedFile(_ path: String) {
+        guard let repoRoot else { return }
+        currentTask = Task { [weak self] in
+            let fullPath = (repoRoot as NSString).appendingPathComponent(path)
+            let url = URL(fileURLWithPath: fullPath)
+            do {
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.refresh()
+            }
+        }
+    }
+
+    /// Stage all unstaged (tracked) changes: `git add -u`.
+    func stageAllUnstaged() {
+        guard let repoRoot else { return }
+        currentTask = Task { [weak self] in
+            let result = Self.runGitCommand(directory: repoRoot, arguments: ["add", "-u"])
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if result.exitCode == 0 { self?.refresh() }
+            }
+        }
+    }
+
+    /// Stage all untracked files individually.
+    func stageAllUntracked() {
+        guard let repoRoot else { return }
+        let paths = status.untracked.map(\.path)
+        guard !paths.isEmpty else { return }
+        currentTask = Task { [weak self] in
+            let result = Self.runGitCommand(directory: repoRoot, arguments: ["add", "--"] + paths)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if result.exitCode == 0 { self?.refresh() }
+            }
+        }
+    }
+
+    /// Unstage all staged files by targeting each file individually.
+    func unstageAll() {
+        guard let repoRoot else { return }
+        let paths = status.staged.map(\.path)
+        guard !paths.isEmpty else { return }
+        currentTask = Task { [weak self] in
+            let result = Self.runGitCommand(directory: repoRoot, arguments: ["restore", "--staged", "--"] + paths)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if result.exitCode == 0 { self?.refresh() }
+            }
+        }
+    }
+
+    /// Discard all unstaged changes by targeting each file individually.
+    func discardAllUnstaged() {
+        guard let repoRoot else { return }
+        let paths = status.unstaged.map(\.path)
+        guard !paths.isEmpty else { return }
+        currentTask = Task { [weak self] in
+            let result = Self.runGitCommand(directory: repoRoot, arguments: ["restore", "--"] + paths)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if result.exitCode == 0 { self?.refresh() }
+            }
+        }
+    }
+
+    /// Delete all untracked files (moves to Trash).
+    func deleteAllUntracked() {
+        guard let repoRoot else { return }
+        let paths = status.untracked.map(\.path)
+        guard !paths.isEmpty else { return }
+        currentTask = Task { [weak self] in
+            for path in paths {
+                let fullPath = (repoRoot as NSString).appendingPathComponent(path)
+                let url = URL(fileURLWithPath: fullPath)
+                do {
+                    try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                } catch {
+                    continue
+                }
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.refresh()
+            }
+        }
+    }
+
     /// Stop all watching and clear status.
     func stop() {
         currentTask?.cancel()

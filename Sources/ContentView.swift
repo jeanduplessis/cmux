@@ -1333,6 +1333,7 @@ struct ContentView: View {
     @State private var titlebarIsDirty: Bool = false
     @State private var titlebarAhead: Int = 0
     @State private var titlebarBehind: Int = 0
+    @State private var titlebarPath: String = ""
     @State private var isFullScreen: Bool = false
     @State private var observedWindow: NSWindow?
     @StateObject private var fullscreenControlsViewModel = TitlebarControlsViewModel()
@@ -2013,6 +2014,35 @@ struct ContentView: View {
             onCopyPath: { filePath in
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(filePath, forType: .string)
+            },
+            // File operations
+            onStage: { [weak service] filePath in
+                service?.stageFile(filePath)
+            },
+            onUnstage: { [weak service] filePath in
+                service?.unstageFile(filePath)
+            },
+            onDiscard: { [weak service] filePath in
+                service?.discardFile(filePath)
+            },
+            onDeleteUntracked: { [weak service] filePath in
+                service?.deleteUntrackedFile(filePath)
+            },
+            // Bulk operations
+            onStageAllUnstaged: { [weak service] in
+                service?.stageAllUnstaged()
+            },
+            onStageAllUntracked: { [weak service] in
+                service?.stageAllUntracked()
+            },
+            onUnstageAll: { [weak service] in
+                service?.unstageAll()
+            },
+            onDiscardAllUnstaged: { [weak service] in
+                service?.discardAllUnstaged()
+            },
+            onDeleteAllUntracked: { [weak service] in
+                service?.deleteAllUntracked()
             }
         )
     }
@@ -2252,7 +2282,7 @@ struct ContentView: View {
     }
 
     private var titlebarHasContent: Bool {
-        !titlebarContextName.isEmpty || !titlebarBranch.isEmpty
+        !titlebarContextName.isEmpty || !titlebarBranch.isEmpty || !titlebarPath.isEmpty
     }
 
     @ViewBuilder
@@ -2281,7 +2311,7 @@ struct ContentView: View {
 
                 // Git branch
                 if !titlebarBranch.isEmpty {
-                    Text("   ")
+                    Text("     ")
                     Text(titlebarBranch)
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .foregroundColor(fakeTitlebarTextColor.opacity(0.6))
@@ -2339,6 +2369,15 @@ struct ContentView: View {
 
                 Spacer()
 
+                if !titlebarPath.isEmpty {
+                    Text(titlebarPath)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(fakeTitlebarTextColor.opacity(0.4))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .allowsHitTesting(false)
+                }
+
             }
             .frame(height: 28)
             .padding(.top, 2)
@@ -2377,6 +2416,7 @@ struct ContentView: View {
                 titlebarIsDirty = false
                 titlebarAhead = 0
                 titlebarBehind = 0
+                titlebarPath = ""
             }
             return
         }
@@ -2416,6 +2456,10 @@ struct ContentView: View {
         let newAhead = gitStatusService.status.ahead
         let newBehind = gitStatusService.status.behind
 
+        // Shortened directory path for the right side of the titlebar
+        let dir = tab.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newPath = dir.isEmpty ? "" : SidebarPathFormatter.shortenedPath(dir)
+
         // Only update state if values changed (avoid unnecessary SwiftUI re-renders)
         if titlebarContextName != newContextName { titlebarContextName = newContextName }
         if titlebarWorkspaceName != newWorkspaceName { titlebarWorkspaceName = newWorkspaceName }
@@ -2423,6 +2467,7 @@ struct ContentView: View {
         if titlebarIsDirty != newIsDirty { titlebarIsDirty = newIsDirty }
         if titlebarAhead != newAhead { titlebarAhead = newAhead }
         if titlebarBehind != newBehind { titlebarBehind = newBehind }
+        if titlebarPath != newPath { titlebarPath = newPath }
     }
 
     private func scheduleTitlebarTextRefresh() {
@@ -9509,7 +9554,7 @@ private struct SidebarFeedbackComposerSheet: View {
                         )
                     }
                     .accessibilityIdentifier("SidebarFeedbackAttachButton")
-                    .help(String(localized: "sidebar.help.feedback.attachImages.tooltip", defaultValue: "Attach Images"))
+                    .safeHelp(String(localized: "sidebar.help.feedback.attachImages.tooltip", defaultValue: "Attach Images"))
 
                     Text(
                         String(
@@ -9527,7 +9572,7 @@ private struct SidebarFeedbackComposerSheet: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "photo")
                                     .foregroundStyle(.secondary)
-                                    .help(String(localized: "sidebar.help.feedback.attachment", defaultValue: "Image Attachment"))
+                                    .safeHelp(String(localized: "sidebar.help.feedback.attachment", defaultValue: "Image Attachment"))
                                 Text(attachment.fileName)
                                     .font(.system(size: 12))
                                     .lineLimit(1)
@@ -10559,7 +10604,7 @@ private struct ProjectHeaderView: View, Equatable {
                 .font(.system(size: 9, weight: .medium))
                 .foregroundColor(.secondary)
                 .frame(width: 12, height: 12)
-                .help(project.isExpanded
+                .safeHelp(project.isExpanded
                     ? String(localized: "sidebar.project.collapse", defaultValue: "Collapse Project")
                     : String(localized: "sidebar.project.expand", defaultValue: "Expand Project")
                 )
@@ -10568,7 +10613,7 @@ private struct ProjectHeaderView: View, Equatable {
             Image(systemName: project.isExpanded ? "folder.fill" : "folder")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(projectIconColor)
-                .help(String(localized: "sidebar.project.folder", defaultValue: "Project"))
+                .safeHelp(String(localized: "sidebar.project.folder", defaultValue: "Project"))
 
             // Project name
             Text(project.name)
@@ -10614,7 +10659,7 @@ private struct ProjectHeaderView: View, Equatable {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(String(localized: "projectHeader.openRoot", defaultValue: "Open Workspace at Project Root"))
+                    .safeHelp(String(localized: "projectHeader.openRoot", defaultValue: "Open Workspace at Project Root"))
                     .contentShape(Rectangle())
                     .onHover { hovering in isHomeButtonHovered = hovering }
                     .backport.pointerStyle(.link)
@@ -10638,7 +10683,7 @@ private struct ProjectHeaderView: View, Equatable {
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(String(localized: "projectHeader.addWorkspace", defaultValue: "New Workspace in Project"))
+                    .safeHelp(String(localized: "projectHeader.addWorkspace", defaultValue: "New Workspace in Project"))
                     .contentShape(Rectangle())
                     .onHover { hovering in isPlusButtonHovered = hovering }
                     .backport.pointerStyle(.link)
@@ -11052,7 +11097,7 @@ private struct TabItemView: View, Equatable {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(activeSecondaryColor(0.8))
-                        .help(String(localized: "sidebar.workspace.pinned", defaultValue: "Pinned"))
+                        .safeHelp(String(localized: "sidebar.workspace.pinned", defaultValue: "Pinned"))
                 }
 
                 if let kindIcon = projectWorkspaceKindIcon {
@@ -11126,7 +11171,7 @@ private struct TabItemView: View, Equatable {
             }
 
             if detailVisibility.showsMetadata {
-                let metadataEntries = tab.sidebarStatusEntriesInDisplayOrder()
+                let metadataEntries = tab.sidebarAllStatusEntriesInDisplayOrder()
                 let metadataBlocks = tab.sidebarMetadataBlocksInDisplayOrder()
                 if !metadataEntries.isEmpty {
                     SidebarMetadataRows(
@@ -11152,7 +11197,7 @@ private struct TabItemView: View, Equatable {
                     Image(systemName: logLevelIcon(latestLog.level))
                         .font(.system(size: 8))
                         .foregroundColor(logLevelColor(latestLog.level, isActive: usesInvertedActiveForeground))
-                        .help(logLevelTooltip(latestLog.level))
+                        .safeHelp(logLevelTooltip(latestLog.level))
                     Text(latestLog.message)
                         .font(.system(size: 10))
                         .foregroundColor(activeSecondaryColor(0.8))
@@ -11186,61 +11231,7 @@ private struct TabItemView: View, Equatable {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            // Branch + directory row
-            if detailVisibility.showsBranchDirectory {
-                if sidebarBranchVerticalLayout {
-                    if !branchDirectoryLines.isEmpty {
-                        HStack(alignment: .top, spacing: 3) {
-                            if sidebarShowGitBranchIcon, branchLinesContainBranch {
-                                Image(systemName: "arrow.triangle.branch")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(activeSecondaryColor(0.6))
-                                    .help(String(localized: "sidebar.workspace.branch", defaultValue: "Git Branch"))
-                            }
-                            VStack(alignment: .leading, spacing: 1) {
-                                ForEach(Array(branchDirectoryLines.enumerated()), id: \.offset) { _, line in
-                                    HStack(spacing: 3) {
-                                        if let branch = line.branch {
-                                            Text(branch)
-                                                .font(.system(size: 10, design: .monospaced))
-                                                .foregroundColor(activeSecondaryColor(0.75))
-                                                .lineLimit(1)
-                                                .truncationMode(.tail)
-                                        }
-                                        if line.branch != nil, line.directory != nil {
-                                            Image(systemName: "circle.fill")
-                                                .font(.system(size: 3))
-                                                .foregroundColor(activeSecondaryColor(0.6))
-                                                .padding(.horizontal, 1)
-                                        }
-                                        if let directory = line.directory {
-                                            Text(directory)
-                                                .font(.system(size: 10, design: .monospaced))
-                                                .foregroundColor(activeSecondaryColor(0.75))
-                                                .lineLimit(1)
-                                                .truncationMode(.tail)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else if let dirRow = compactBranchDirectoryRow {
-                    HStack(spacing: 3) {
-                        if sidebarShowGitBranchIcon, compactGitBranchSummaryText != nil {
-                            Image(systemName: "arrow.triangle.branch")
-                                .font(.system(size: 9))
-                                .foregroundColor(activeSecondaryColor(0.6))
-                                .help(String(localized: "sidebar.workspace.branch", defaultValue: "Git Branch"))
-                        }
-                        Text(dirRow)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(activeSecondaryColor(0.75))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                }
-            }
+            // Branch + directory row removed — info now shown in the titlebar
 
             // Pull request rows
             if detailVisibility.showsPullRequests, !pullRequestRows.isEmpty {
@@ -12120,8 +12111,24 @@ private struct TabItemView: View, Equatable {
     }
 }
 
+/// Maps agent status keys (e.g. "kilo_code", "claude_code") to human-readable display names.
+private func agentDisplayName(for key: String) -> String {
+    switch key {
+    case "kilo_code": return "Kilo"
+    case "claude_code": return "Claude Code"
+    case "codex": return "Codex"
+    case "gemini_code", "gemini": return "Gemini"
+    default:
+        return key
+            .replacingOccurrences(of: "_", with: " ")
+            .split(separator: " ")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+}
+
 private struct SidebarMetadataRows: View {
-    let entries: [SidebarStatusEntry]
+    let entries: [SidebarStatusDisplayEntry]
     let isActive: Bool
     let onFocus: () -> Void
 
@@ -12130,8 +12137,12 @@ private struct SidebarMetadataRows: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(visibleEntries, id: \.key) { entry in
-                SidebarMetadataEntryRow(entry: entry, isActive: isActive, onFocus: onFocus)
+            ForEach(visibleEntries) { displayEntry in
+                SidebarMetadataEntryRow(
+                    displayEntry: displayEntry,
+                    isActive: isActive,
+                    onFocus: onFocus
+                )
             }
 
             if shouldShowToggle {
@@ -12154,15 +12165,20 @@ private struct SidebarMetadataRows: View {
         Color(nsColor: sidebarSelectedWorkspaceForegroundNSColor(opacity: 0.65))
     }
 
-    private var visibleEntries: [SidebarStatusEntry] {
+    private var visibleEntries: [SidebarStatusDisplayEntry] {
         guard !isExpanded, entries.count > collapsedEntryLimit else { return entries }
         return Array(entries.prefix(collapsedEntryLimit))
     }
 
     private var helpText: String {
-        entries.map { entry in
+        entries.map { displayEntry in
+            let entry = displayEntry.entry
             let trimmed = entry.value.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? entry.key : trimmed
+            let statusText = trimmed.isEmpty ? entry.key : trimmed
+            if let label = displayEntry.panelLabel {
+                return "Tab \(label) (\(agentDisplayName(for: entry.key))): \(statusText)"
+            }
+            return statusText
         }
         .joined(separator: "\n")
     }
@@ -12173,9 +12189,11 @@ private struct SidebarMetadataRows: View {
 }
 
 private struct SidebarMetadataEntryRow: View {
-    let entry: SidebarStatusEntry
+    let displayEntry: SidebarStatusDisplayEntry
     let isActive: Bool
     let onFocus: () -> Void
+
+    private var entry: SidebarStatusEntry { displayEntry.entry }
 
     var body: some View {
         Group {
@@ -12203,6 +12221,12 @@ private struct SidebarMetadataEntryRow: View {
                 icon
                     .foregroundColor(foregroundColor.opacity(0.95))
             }
+            if let panelLabel = displayEntry.panelLabel {
+                // Per-surface format: Tab <number> (<agent>): <status>
+                Text("Tab \(panelLabel) (\(agentDisplayName(for: entry.key))):")
+                    .font(.system(size: 9))
+                    .foregroundColor(panelLabelColor)
+            }
             metadataText(underlined: underlined)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -12210,6 +12234,12 @@ private struct SidebarMetadataEntryRow: View {
         }
         .font(.system(size: 10))
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var panelLabelColor: Color {
+        isActive
+            ? Color(nsColor: sidebarSelectedWorkspaceForegroundNSColor(opacity: 0.55))
+            : .secondary.opacity(0.7)
     }
 
     private var foregroundColor: Color {

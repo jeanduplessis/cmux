@@ -736,6 +736,7 @@ struct BrowserPanelView: View {
                 Image(systemName: "lock.fill")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
+                    .safeHelp(String(localized: "browser.secureBadge.help", defaultValue: "Secure connection"))
             }
 
             OmnibarTextFieldRepresentable(

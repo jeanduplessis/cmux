@@ -72,7 +72,7 @@ struct MarkdownPanelView: View {
             Image(systemName: "doc.richtext")
                 .foregroundColor(.secondary)
                 .font(.system(size: 12))
-                .help(String(localized: "markdown.fileIcon", defaultValue: "Markdown File"))
+                .safeHelp(String(localized: "markdown.fileIcon", defaultValue: "Markdown File"))
             Text(panel.filePath)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.secondary)

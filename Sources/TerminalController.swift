@@ -13368,36 +13368,74 @@ class TerminalController {
             return nil
         }()
 
+        // Per-surface routing: if --panel or --surface is provided, store per-panel.
+        let panelIdString = normalizedOptionValue(parsed.options["panel"] ?? parsed.options["surface"])
+        let targetPanelId: UUID? = panelIdString.flatMap { UUID(uuidString: $0) }
+
         DispatchQueue.main.async { [weak self] in
             guard let self, let tab = self.tabForSidebarMutation(id: targetTabId) else { return }
-            guard Self.shouldReplaceStatusEntry(
-                current: tab.statusEntries[key],
-                key: key,
-                value: value,
-                icon: icon,
-                color: color,
-                url: parsedURL,
-                priority: priority,
-                format: format
-            ) else {
-                // Still update PID tracking even if the status display hasn't changed.
+
+            if let panelId = targetPanelId {
+                // Per-surface status entry
+                let current = tab.panelStatusEntries[panelId]?[key]
+                guard Self.shouldReplaceStatusEntry(
+                    current: current,
+                    key: key,
+                    value: value,
+                    icon: icon,
+                    color: color,
+                    url: parsedURL,
+                    priority: priority,
+                    format: format
+                ) else {
+                    if let pidValue {
+                        tab.panelAgentPIDs[panelId, default: [:]][key] = pidValue
+                    }
+                    return
+                }
+                tab.panelStatusEntries[panelId, default: [:]][key] = SidebarStatusEntry(
+                    key: key,
+                    value: value,
+                    icon: icon,
+                    color: color,
+                    url: parsedURL,
+                    priority: priority,
+                    format: format,
+                    timestamp: Date()
+                )
+                if let pidValue {
+                    tab.panelAgentPIDs[panelId, default: [:]][key] = pidValue
+                }
+            } else {
+                // Workspace-level status entry (existing behavior)
+                guard Self.shouldReplaceStatusEntry(
+                    current: tab.statusEntries[key],
+                    key: key,
+                    value: value,
+                    icon: icon,
+                    color: color,
+                    url: parsedURL,
+                    priority: priority,
+                    format: format
+                ) else {
+                    if let pidValue {
+                        tab.agentPIDs[key] = pidValue
+                    }
+                    return
+                }
+                tab.statusEntries[key] = SidebarStatusEntry(
+                    key: key,
+                    value: value,
+                    icon: icon,
+                    color: color,
+                    url: parsedURL,
+                    priority: priority,
+                    format: format,
+                    timestamp: Date()
+                )
                 if let pidValue {
                     tab.agentPIDs[key] = pidValue
                 }
-                return
-            }
-            tab.statusEntries[key] = SidebarStatusEntry(
-                key: key,
-                value: value,
-                icon: icon,
-                color: color,
-                url: parsedURL,
-                priority: priority,
-                format: format,
-                timestamp: Date()
-            )
-            if let pidValue {
-                tab.agentPIDs[key] = pidValue
             }
         }
         return "OK"
@@ -13409,45 +13447,69 @@ class TerminalController {
             return "ERROR: Missing metadata key — usage: \(usage)"
         }
 
+        let panelIdString = normalizedOptionValue(parsed.options["panel"] ?? parsed.options["surface"])
+        let targetPanelId: UUID? = panelIdString.flatMap { UUID(uuidString: $0) }
+
         var result = "OK"
         DispatchQueue.main.sync {
             guard let tab = resolveTabForReport(args) else {
                 result = parsed.options["tab"] != nil ? "ERROR: Tab not found" : "ERROR: No tab selected"
                 return
             }
-            if tab.statusEntries.removeValue(forKey: key) == nil {
-                result = "OK (key not found)"
+            if let panelId = targetPanelId {
+                // Per-surface clear
+                if tab.panelStatusEntries[panelId]?.removeValue(forKey: key) == nil {
+                    result = "OK (key not found)"
+                }
+                if tab.panelStatusEntries[panelId]?.isEmpty == true {
+                    tab.panelStatusEntries.removeValue(forKey: panelId)
+                }
+                tab.panelAgentPIDs[panelId]?.removeValue(forKey: key)
+                if tab.panelAgentPIDs[panelId]?.isEmpty == true {
+                    tab.panelAgentPIDs.removeValue(forKey: panelId)
+                }
+            } else {
+                // Workspace-level clear (existing behavior)
+                if tab.statusEntries.removeValue(forKey: key) == nil {
+                    result = "OK (key not found)"
+                }
+                tab.agentPIDs.removeValue(forKey: key)
             }
-            tab.agentPIDs.removeValue(forKey: key)
         }
         return result
     }
 
     /// Register an agent PID for stale-session detection without setting a visible status entry.
-    /// Usage: set_agent_pid <key> <pid> [--tab=<id>]
+    /// Usage: set_agent_pid <key> <pid> [--tab=<id>] [--panel=<id>]
     private func setAgentPID(_ args: String) -> String {
         let parsed = parseOptions(args)
         guard parsed.positional.count >= 2,
               let pid = Int32(parsed.positional[1]), pid > 0 else {
-            return "ERROR: Usage: set_agent_pid <key> <pid> [--tab=<id>]"
+            return "ERROR: Usage: set_agent_pid <key> <pid> [--tab=<id>] [--panel=<id>]"
         }
         let key = parsed.positional[0]
         let tabResolution = resolveTabIdForSidebarMutation(reportArgs: args, options: parsed.options)
         guard let targetTabId = tabResolution.tabId else {
             return tabResolution.error ?? "ERROR: No tab selected"
         }
+        let panelIdString = normalizedOptionValue(parsed.options["panel"] ?? parsed.options["surface"])
+        let targetPanelId: UUID? = panelIdString.flatMap { UUID(uuidString: $0) }
         DispatchQueue.main.async { [weak self] in
             guard let self, let tab = self.tabForSidebarMutation(id: targetTabId) else { return }
-            tab.agentPIDs[key] = pid
+            if let panelId = targetPanelId {
+                tab.panelAgentPIDs[panelId, default: [:]][key] = pid
+            } else {
+                tab.agentPIDs[key] = pid
+            }
         }
         return "OK"
     }
 
-    /// Unregister an agent PID. Usage: clear_agent_pid <key> [--tab=<id>]
+    /// Unregister an agent PID. Usage: clear_agent_pid <key> [--tab=<id>] [--panel=<id>]
     private func clearAgentPID(_ args: String) -> String {
         let parsed = parseOptions(args)
         guard let key = parsed.positional.first else {
-            return "ERROR: Usage: clear_agent_pid <key> [--tab=<id>]"
+            return "ERROR: Usage: clear_agent_pid <key> [--tab=<id>] [--panel=<id>]"
         }
         // Resolve tab ID synchronously before dispatching to avoid
         // racing against selection changes on the main queue.
@@ -13455,9 +13517,18 @@ class TerminalController {
         guard let targetTabId = tabResolution.tabId else {
             return tabResolution.error ?? "ERROR: No tab selected"
         }
+        let panelIdString = normalizedOptionValue(parsed.options["panel"] ?? parsed.options["surface"])
+        let targetPanelId: UUID? = panelIdString.flatMap { UUID(uuidString: $0) }
         DispatchQueue.main.async { [weak self] in
             guard let self, let tab = self.tabForSidebarMutation(id: targetTabId) else { return }
-            tab.agentPIDs.removeValue(forKey: key)
+            if let panelId = targetPanelId {
+                tab.panelAgentPIDs[panelId]?.removeValue(forKey: key)
+                if tab.panelAgentPIDs[panelId]?.isEmpty == true {
+                    tab.panelAgentPIDs.removeValue(forKey: panelId)
+                }
+            } else {
+                tab.agentPIDs.removeValue(forKey: key)
+            }
         }
         return "OK"
     }
@@ -13479,12 +13550,21 @@ class TerminalController {
                 result = "ERROR: Tab not found"
                 return
             }
-            let entries = tab.sidebarStatusEntriesInDisplayOrder()
-            if entries.isEmpty {
+            let displayEntries = tab.sidebarAllStatusEntriesInDisplayOrder()
+            if displayEntries.isEmpty {
                 result = emptyMessage
                 return
             }
-            result = entries.map(sidebarMetadataLine).joined(separator: "\n")
+            result = displayEntries.map { displayEntry in
+                var line = sidebarMetadataLine(displayEntry.entry)
+                if let panelId = displayEntry.panelId {
+                    line += " panel=\(panelId.uuidString)"
+                }
+                if let panelLabel = displayEntry.panelLabel {
+                    line += " panel_label=\(panelLabel)"
+                }
+                return line
+            }.joined(separator: "\n")
         }
         return result
     }

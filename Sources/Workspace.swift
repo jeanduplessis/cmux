@@ -87,6 +87,23 @@ struct SidebarStatusEntry {
     }
 }
 
+/// A status entry with optional per-surface context for sidebar display.
+struct SidebarStatusDisplayEntry: Identifiable {
+    let panelId: UUID?
+    let panelLabel: String?
+    /// Zero-based positional index of the panel within the workspace's sidebar ordering.
+    /// `nil` for workspace-level entries (no panel association).
+    let panelIndex: Int?
+    let entry: SidebarStatusEntry
+
+    var id: String {
+        if let panelId {
+            return "\(panelId.uuidString)_\(entry.key)"
+        }
+        return entry.key
+    }
+}
+
 struct SidebarMetadataBlock {
     let key: String
     let markdown: String
@@ -205,7 +222,9 @@ extension Workspace {
         // processes (e.g. claude_code "Running"). Don't restore them across app
         // restarts because the processes that set them are gone.
         statusEntries.removeAll()
+        panelStatusEntries.removeAll()
         agentPIDs.removeAll()
+        panelAgentPIDs.removeAll()
         logEntries = snapshot.logEntries.map { entry in
             SidebarLogEntry(
                 message: entry.message,
@@ -1003,6 +1022,8 @@ final class Workspace: Identifiable, ObservableObject {
     nonisolated private static let manualUnreadFocusGraceInterval: TimeInterval = 0.2
     nonisolated private static let manualUnreadClearDelayAfterFocusFlash: TimeInterval = 0.2
     @Published var statusEntries: [String: SidebarStatusEntry] = [:]
+    /// Per-surface status entries, keyed by surface UUID then agent key.
+    @Published var panelStatusEntries: [UUID: [String: SidebarStatusEntry]] = [:]
     @Published var metadataBlocks: [String: SidebarMetadataBlock] = [:]
     @Published var logEntries: [SidebarLogEntry] = []
     @Published var progress: SidebarProgressState?
@@ -1017,6 +1038,8 @@ final class Workspace: Identifiable, ObservableObject {
     /// PIDs associated with agent status entries (e.g. claude_code), keyed by status key.
     /// Used for stale-session detection: if the PID is dead, the status entry is cleared.
     var agentPIDs: [String: pid_t] = [:]
+    /// Per-surface agent PIDs, keyed by surface UUID then agent key.
+    var panelAgentPIDs: [UUID: [String: pid_t]] = [:]
     private var restoredTerminalScrollbackByPanelId: [UUID: String] = [:]
 
     var focusedSurfaceId: UUID? { focusedPanelId }
@@ -1780,7 +1803,9 @@ final class Workspace: Identifiable, ObservableObject {
 
     func resetSidebarContext(reason: String = "unspecified") {
         statusEntries.removeAll()
+        panelStatusEntries.removeAll()
         agentPIDs.removeAll()
+        panelAgentPIDs.removeAll()
         logEntries.removeAll()
         progress = nil
         gitBranch = nil
@@ -1880,6 +1905,8 @@ final class Workspace: Identifiable, ObservableObject {
         surfaceTTYNames = surfaceTTYNames.filter { validSurfaceIds.contains($0.key) }
         panelShellActivityStates = panelShellActivityStates.filter { validSurfaceIds.contains($0.key) }
         panelPullRequests = panelPullRequests.filter { validSurfaceIds.contains($0.key) }
+        panelStatusEntries = panelStatusEntries.filter { validSurfaceIds.contains($0.key) }
+        panelAgentPIDs = panelAgentPIDs.filter { validSurfaceIds.contains($0.key) }
         recomputeListeningPorts()
     }
 
@@ -1958,6 +1985,67 @@ final class Workspace: Identifiable, ObservableObject {
             if lhs.timestamp != rhs.timestamp { return lhs.timestamp > rhs.timestamp }
             return lhs.key < rhs.key
         }
+    }
+
+    /// Returns all status entries (workspace-level and per-surface) for sidebar display.
+    /// Per-surface entries include a panel label derived from custom title, process title, or index.
+    func sidebarAllStatusEntriesInDisplayOrder() -> [SidebarStatusDisplayEntry] {
+        let orderedPanelIds = sidebarOrderedPanelIds()
+        let hasPanelEntries = !panelStatusEntries.isEmpty
+
+        // Workspace-level entries (no panel label)
+        var result: [SidebarStatusDisplayEntry] = statusEntries.values.map { entry in
+            SidebarStatusDisplayEntry(panelId: nil, panelLabel: nil, panelIndex: nil, entry: entry)
+        }
+
+        // Per-surface entries with panel labels
+        for (index, panelId) in orderedPanelIds.enumerated() {
+            guard let entries = panelStatusEntries[panelId], !entries.isEmpty else { continue }
+            let label = panelLabelForStatusDisplay(panelId: panelId, index: index)
+            for entry in entries.values {
+                result.append(SidebarStatusDisplayEntry(
+                    panelId: panelId,
+                    panelLabel: label,
+                    panelIndex: index,
+                    entry: entry
+                ))
+            }
+        }
+
+        // Also include per-surface entries for panels not in the ordered list (edge case)
+        let orderedSet = Set(orderedPanelIds)
+        var extraIndex = orderedPanelIds.count
+        for (panelId, entries) in panelStatusEntries where !orderedSet.contains(panelId) {
+            guard !entries.isEmpty else { continue }
+            let label = panelLabelForStatusDisplay(panelId: panelId, index: extraIndex)
+            for entry in entries.values {
+                result.append(SidebarStatusDisplayEntry(
+                    panelId: panelId,
+                    panelLabel: label,
+                    panelIndex: extraIndex,
+                    entry: entry
+                ))
+            }
+            extraIndex += 1
+        }
+
+        // Sort: priority desc, panel index asc, timestamp desc, key asc
+        result.sort { lhs, rhs in
+            if lhs.entry.priority != rhs.entry.priority { return lhs.entry.priority > rhs.entry.priority }
+            let lhsIndex = lhs.panelIndex ?? -1
+            let rhsIndex = rhs.panelIndex ?? -1
+            if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
+            if lhs.entry.timestamp != rhs.entry.timestamp { return lhs.entry.timestamp > rhs.entry.timestamp }
+            return lhs.entry.key < rhs.entry.key
+        }
+
+        return result
+    }
+
+    /// Derive a short label for a panel to use in status display.
+    /// Always returns the 1-based tab number matching the keyboard shortcut (^1, ^2, …).
+    private func panelLabelForStatusDisplay(panelId: UUID, index: Int) -> String {
+        return "\(index + 1)"
     }
 
     func sidebarMetadataBlocksInDisplayOrder() -> [SidebarMetadataBlock] {

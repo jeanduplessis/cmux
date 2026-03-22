@@ -13,6 +13,28 @@ struct GitSidebarFileActions {
     var onDiffUntracked: (_ filePath: String) -> Void = { _ in }
     /// Copy the relative file path to the pasteboard.
     var onCopyPath: (_ filePath: String) -> Void = { _ in }
+
+    // File operations
+    /// Stage a file: `git add -- <path>`.
+    var onStage: (_ filePath: String) -> Void = { _ in }
+    /// Unstage a file: `git restore --staged -- <path>`.
+    var onUnstage: (_ filePath: String) -> Void = { _ in }
+    /// Discard changes to a tracked unstaged file: `git restore -- <path>`.
+    var onDiscard: (_ filePath: String) -> Void = { _ in }
+    /// Delete an untracked file.
+    var onDeleteUntracked: (_ filePath: String) -> Void = { _ in }
+
+    // Bulk operations
+    /// Stage all unstaged tracked changes: `git add -u`.
+    var onStageAllUnstaged: () -> Void = {}
+    /// Stage all untracked files.
+    var onStageAllUntracked: () -> Void = {}
+    /// Unstage all staged files: `git restore --staged .`.
+    var onUnstageAll: () -> Void = {}
+    /// Discard all unstaged changes: `git restore .`.
+    var onDiscardAllUnstaged: () -> Void = {}
+    /// Delete all untracked files.
+    var onDeleteAllUntracked: () -> Void = {}
 }
 
 // MARK: - Main View
@@ -88,14 +110,14 @@ private struct GitSidebarHeader: View {
                     .font(.system(size: 11))
             }
             .buttonStyle(.plain)
-            .help(String(localized: "gitSidebar.refresh", defaultValue: "Refresh"))
+            .safeHelp(String(localized: "gitSidebar.refresh", defaultValue: "Refresh"))
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 11))
             }
             .buttonStyle(.plain)
-            .help(String(localized: "gitSidebar.close", defaultValue: "Close"))
+            .safeHelp(String(localized: "gitSidebar.close", defaultValue: "Close"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -115,7 +137,7 @@ private struct GitSidebarBranchBar: View {
             Image(systemName: "arrow.triangle.branch")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
-                .help(String(localized: "gitSidebar.currentBranch", defaultValue: "Current Branch"))
+                .safeHelp(String(localized: "gitSidebar.currentBranch", defaultValue: "Current Branch"))
 
             Text(branch)
                 .font(.system(size: 11))
@@ -129,13 +151,13 @@ private struct GitSidebarBranchBar: View {
                     Text("\u{2191}\(ahead)")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(.green)
-                        .help(String(localized: "gitSidebar.ahead", defaultValue: "ahead"))
+                        .safeHelp(String(localized: "gitSidebar.ahead", defaultValue: "ahead"))
                 }
                 if behind > 0 {
                     Text("\u{2193}\(behind)")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(.orange)
-                        .help(String(localized: "gitSidebar.behind", defaultValue: "behind"))
+                        .safeHelp(String(localized: "gitSidebar.behind", defaultValue: "behind"))
                 }
             }
         }
@@ -151,6 +173,9 @@ private struct GitSidebarFileList: View {
     let status: GitRepoStatus
     let fileActions: GitSidebarFileActions
 
+    /// Confirmation dialog state for destructive operations.
+    @State private var confirmAction: GitConfirmAction?
+
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -160,7 +185,15 @@ private struct GitSidebarFileList: View {
                         count: status.staged.count,
                         files: status.staged,
                         accentColor: Color.green.opacity(0.7),
-                        fileActions: fileActions
+                        fileActions: fileActions,
+                        sectionActions: [
+                            GitSectionAction(
+                                systemImage: "minus.circle",
+                                help: String(localized: "gitSidebar.action.unstageAll", defaultValue: "Unstage All"),
+                                action: { fileActions.onUnstageAll() }
+                            ),
+                        ],
+                        confirmAction: $confirmAction
                     )
                 }
 
@@ -173,7 +206,23 @@ private struct GitSidebarFileList: View {
                         count: status.unstaged.count,
                         files: status.unstaged,
                         accentColor: Color.orange.opacity(0.7),
-                        fileActions: fileActions
+                        fileActions: fileActions,
+                        sectionActions: [
+                            GitSectionAction(
+                                systemImage: "plus.circle",
+                                help: String(localized: "gitSidebar.action.stageAll", defaultValue: "Stage All"),
+                                action: { fileActions.onStageAllUnstaged() }
+                            ),
+                            GitSectionAction(
+                                systemImage: "arrow.uturn.backward",
+                                help: String(localized: "gitSidebar.action.discardAll", defaultValue: "Discard All Changes"),
+                                isDestructive: true,
+                                action: {
+                                    confirmAction = .discardAllUnstaged
+                                }
+                            ),
+                        ],
+                        confirmAction: $confirmAction
                     )
                 }
 
@@ -186,13 +235,135 @@ private struct GitSidebarFileList: View {
                         count: status.untracked.count,
                         files: status.untracked,
                         accentColor: .secondary,
-                        fileActions: fileActions
+                        fileActions: fileActions,
+                        sectionActions: [
+                            GitSectionAction(
+                                systemImage: "plus.circle",
+                                help: String(localized: "gitSidebar.action.stageAll", defaultValue: "Stage All"),
+                                action: { fileActions.onStageAllUntracked() }
+                            ),
+                            GitSectionAction(
+                                systemImage: "trash",
+                                help: String(localized: "gitSidebar.action.deleteAll", defaultValue: "Delete All Untracked"),
+                                isDestructive: true,
+                                action: {
+                                    confirmAction = .deleteAllUntracked
+                                }
+                            ),
+                        ],
+                        confirmAction: $confirmAction
                     )
                 }
             }
             .padding(.vertical, 4)
         }
+        .alert(
+            confirmAction?.title ?? "",
+            isPresented: Binding(
+                get: { confirmAction != nil },
+                set: { if !$0 { confirmAction = nil } }
+            ),
+            presenting: confirmAction
+        ) { action in
+            Button(
+                String(localized: "gitSidebar.confirm.cancel", defaultValue: "Cancel"),
+                role: .cancel
+            ) {
+                confirmAction = nil
+            }
+            Button(action.confirmButtonLabel, role: .destructive) {
+                action.perform(fileActions: fileActions)
+                confirmAction = nil
+            }
+        } message: { action in
+            Text(action.message)
+        }
     }
+}
+
+// MARK: - Confirmation Action
+
+/// Describes a destructive action pending user confirmation.
+private enum GitConfirmAction: Identifiable {
+    case discardFile(path: String)
+    case discardAllUnstaged
+    case deleteFile(path: String)
+    case deleteAllUntracked
+
+    var id: String {
+        switch self {
+        case .discardFile(let path): return "discard:\(path)"
+        case .discardAllUnstaged: return "discardAll"
+        case .deleteFile(let path): return "delete:\(path)"
+        case .deleteAllUntracked: return "deleteAll"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .discardFile:
+            return String(localized: "gitSidebar.confirm.discard.title", defaultValue: "Discard Changes?")
+        case .discardAllUnstaged:
+            return String(localized: "gitSidebar.confirm.discardAll.title", defaultValue: "Discard All Changes?")
+        case .deleteFile:
+            return String(localized: "gitSidebar.confirm.delete.title", defaultValue: "Delete Untracked File?")
+        case .deleteAllUntracked:
+            return String(localized: "gitSidebar.confirm.deleteAll.title", defaultValue: "Delete All Untracked Files?")
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .discardFile(let path):
+            let fileName = (path as NSString).lastPathComponent
+            let template = String(localized: "gitSidebar.confirm.discard.message",
+                                  defaultValue: "This will revert the file to its last committed state. This cannot be undone.")
+            return template.contains("%@") ? template.replacingOccurrences(of: "%@", with: fileName) :
+                "This will revert \(fileName) to its last committed state. This cannot be undone."
+        case .discardAllUnstaged:
+            return String(localized: "gitSidebar.confirm.discardAll.message",
+                          defaultValue: "This will revert all modified files to their last committed state. This cannot be undone.")
+        case .deleteFile(let path):
+            let fileName = (path as NSString).lastPathComponent
+            let template = String(localized: "gitSidebar.confirm.delete.message",
+                                  defaultValue: "This will move the file to the Trash. You can recover it from there if needed.")
+            return template.contains("%@") ? template.replacingOccurrences(of: "%@", with: fileName) :
+                "This will move \(fileName) to the Trash. You can recover it from there if needed."
+        case .deleteAllUntracked:
+            return String(localized: "gitSidebar.confirm.deleteAll.message",
+                          defaultValue: "This will move all untracked files to the Trash. You can recover them from there if needed.")
+        }
+    }
+
+    var confirmButtonLabel: String {
+        switch self {
+        case .discardFile, .discardAllUnstaged:
+            return String(localized: "gitSidebar.confirm.discard.button", defaultValue: "Discard")
+        case .deleteFile, .deleteAllUntracked:
+            return String(localized: "gitSidebar.confirm.delete.button", defaultValue: "Delete")
+        }
+    }
+
+    func perform(fileActions: GitSidebarFileActions) {
+        switch self {
+        case .discardFile(let path):
+            fileActions.onDiscard(path)
+        case .discardAllUnstaged:
+            fileActions.onDiscardAllUnstaged()
+        case .deleteFile(let path):
+            fileActions.onDeleteUntracked(path)
+        case .deleteAllUntracked:
+            fileActions.onDeleteAllUntracked()
+        }
+    }
+}
+
+/// Descriptor for a section header action button.
+private struct GitSectionAction {
+    let systemImage: String
+    let help: String
+    var isDestructive: Bool = false
+    let action: () -> Void
 }
 
 // MARK: - Collapsible Section
@@ -203,47 +374,67 @@ private struct GitSidebarSection: View {
     let files: [GitFileEntry]
     let accentColor: Color
     let fileActions: GitSidebarFileActions
+    var sectionActions: [GitSectionAction] = []
+    @Binding var confirmAction: GitConfirmAction?
 
     @State private var isExpanded: Bool = true
+    @State private var isHeaderHovered: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
             // Section header
-            Button(action: { withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() } }) {
-                HStack(spacing: 4) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 12)
+            HStack(spacing: 4) {
+                Button(action: { withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() } }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 12)
 
-                    Text(title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.primary)
+                        Text(title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.primary)
 
-                    Text("\(count)")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(accentColor)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(accentColor.opacity(0.12))
-                        .clipShape(Capsule())
-
-                    Spacer()
+                        Text("\(count)")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(accentColor)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(accentColor.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                // Section action buttons (visible on hover)
+                if !sectionActions.isEmpty {
+                    HStack(spacing: 2) {
+                        ForEach(sectionActions.indices, id: \.self) { index in
+                            let sectionAction = sectionActions[index]
+                            GitFileActionButton(
+                                systemImage: sectionAction.systemImage,
+                                help: sectionAction.help,
+                                action: sectionAction.action
+                            )
+                        }
+                    }
+                    .opacity(isHeaderHovered ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.12), value: isHeaderHovered)
+                }
             }
-            .buttonStyle(.plain)
-            .help(isExpanded
-                ? String(localized: "gitSidebar.section.collapse", defaultValue: "Collapse")
-                : String(localized: "gitSidebar.section.expand", defaultValue: "Expand")
-            )
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHeaderHovered = hovering
+            }
 
             // File rows
             if isExpanded {
                 ForEach(files) { file in
-                    GitFileRow(file: file, fileActions: fileActions)
+                    GitFileRow(file: file, fileActions: fileActions, confirmAction: $confirmAction)
 
                     // Show child files for untracked directory entries
                     if !file.children.isEmpty {
@@ -265,6 +456,7 @@ private struct GitSidebarSection: View {
 private struct GitFileRow: View {
     let file: GitFileEntry
     let fileActions: GitSidebarFileActions
+    @Binding var confirmAction: GitConfirmAction?
 
     @State private var isHovered: Bool = false
 
@@ -274,7 +466,7 @@ private struct GitFileRow: View {
                 .font(.system(size: 10))
                 .foregroundStyle(colorForStatus(file.status))
                 .frame(width: 14, height: 15, alignment: .center)
-                .help(file.status.label)
+                .safeHelp(file.status.label)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(file.fileName)
@@ -293,31 +485,24 @@ private struct GitFileRow: View {
 
             Spacer()
 
-            // Diff stat counts (+N -N), shown only when counts are available.
-            if let insertions = file.insertions, let deletions = file.deletions,
-               insertions > 0 || deletions > 0 {
-                HStack(spacing: 3) {
-                    if insertions > 0 {
-                        Text("+\(insertions)")
-                            .foregroundStyle(Color.green.opacity(0.7))
-                    }
-                    if deletions > 0 {
-                        Text("-\(deletions)")
-                            .foregroundStyle(Color.red.opacity(0.7))
-                    }
-                }
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .opacity(isHovered ? 0 : 1)
-            }
-
-            // Hover action icons replace the status symbol on hover.
+            // Diff stat counts and action buttons share the same trailing space
             ZStack(alignment: .trailing) {
-                // Status letter (visible when not hovered)
-                Text(file.status.symbol)
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(colorForStatus(file.status))
-                    .frame(height: 15, alignment: .center)
+                // Diff stat counts (+N -N), shown only when counts are available.
+                if let insertions = file.insertions, let deletions = file.deletions,
+                   insertions > 0 || deletions > 0 {
+                    HStack(spacing: 3) {
+                        if insertions > 0 {
+                            Text("+\(insertions)")
+                                .foregroundStyle(Color.green.opacity(0.7))
+                        }
+                        if deletions > 0 {
+                            Text("-\(deletions)")
+                                .foregroundStyle(Color.red.opacity(0.7))
+                        }
+                    }
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .opacity(isHovered ? 0 : 1)
+                }
 
                 // Action icons (visible on hover)
                 HStack(spacing: 2) {
@@ -353,13 +538,48 @@ private struct GitFileRow: View {
                             fileActions.onCopyPath(file.path)
                         }
                     )
+
+                    // Area-specific action buttons
+                    switch file.area {
+                    case .staged:
+                        // Unstage
+                        GitFileActionButton(
+                            systemImage: "minus.circle",
+                            help: String(localized: "gitSidebar.action.unstage", defaultValue: "Unstage"),
+                            action: { fileActions.onUnstage(file.path) }
+                        )
+                    case .unstaged:
+                        // Stage
+                        GitFileActionButton(
+                            systemImage: "plus.circle",
+                            help: String(localized: "gitSidebar.action.stage", defaultValue: "Stage"),
+                            action: { fileActions.onStage(file.path) }
+                        )
+                        // Discard (with confirmation)
+                        GitFileActionButton(
+                            systemImage: "arrow.uturn.backward",
+                            help: String(localized: "gitSidebar.action.discard", defaultValue: "Discard Changes"),
+                            action: { confirmAction = .discardFile(path: file.path) }
+                        )
+                    case .untracked:
+                        // Stage
+                        GitFileActionButton(
+                            systemImage: "plus.circle",
+                            help: String(localized: "gitSidebar.action.stage", defaultValue: "Stage"),
+                            action: { fileActions.onStage(file.path) }
+                        )
+                        // Delete (with confirmation)
+                        GitFileActionButton(
+                            systemImage: "trash",
+                            help: String(localized: "gitSidebar.action.delete", defaultValue: "Delete"),
+                            action: { confirmAction = .deleteFile(path: file.path) }
+                        )
+                    }
                 }
                 .opacity(isHovered ? 1 : 0)
+                .animation(.easeInOut(duration: 0.12), value: isHovered)
             }
-            // Fixed width so status symbols align across rows regardless of
-            // how many hover-action buttons each row has (2 vs 3).
-            .frame(width: 52)
-            .animation(.easeInOut(duration: 0.12), value: isHovered)
+            .frame(maxHeight: .infinity)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 2)
@@ -369,6 +589,7 @@ private struct GitFileRow: View {
         .onHover { hovering in
             isHovered = hovering
         }
+        .contextMenu { contextMenuItems }
     }
 
     /// Blame is available for tracked files (not deleted, not untracked).
@@ -379,6 +600,92 @@ private struct GitFileRow: View {
     /// Diff is available for all file areas.
     private var canShowDiff: Bool {
         true
+    }
+
+    @ViewBuilder
+    private var contextMenuItems: some View {
+        switch file.area {
+        case .staged:
+            Button {
+                fileActions.onUnstage(file.path)
+            } label: {
+                Label(String(localized: "gitSidebar.context.unstage", defaultValue: "Unstage File"), systemImage: "minus.circle")
+            }
+            Divider()
+            Button {
+                fileActions.onDiff(file.path, true)
+            } label: {
+                Label(String(localized: "gitSidebar.context.showDiff", defaultValue: "Show Diff"), systemImage: "arrow.left.arrow.right")
+            }
+            if canShowBlame {
+                Button {
+                    fileActions.onBlame(file.path)
+                } label: {
+                    Label(String(localized: "gitSidebar.context.showBlame", defaultValue: "Show Blame"), systemImage: "clock")
+                }
+            }
+            Divider()
+            Button {
+                fileActions.onCopyPath(file.path)
+            } label: {
+                Label(String(localized: "gitSidebar.context.copyPath", defaultValue: "Copy Relative Path"), systemImage: "doc.on.clipboard")
+            }
+
+        case .unstaged:
+            Button {
+                fileActions.onStage(file.path)
+            } label: {
+                Label(String(localized: "gitSidebar.context.stage", defaultValue: "Stage File"), systemImage: "plus.circle")
+            }
+            Button(role: .destructive) {
+                confirmAction = .discardFile(path: file.path)
+            } label: {
+                Label(String(localized: "gitSidebar.context.discard", defaultValue: "Discard Changes"), systemImage: "arrow.uturn.backward")
+            }
+            Divider()
+            Button {
+                fileActions.onDiff(file.path, false)
+            } label: {
+                Label(String(localized: "gitSidebar.context.showDiff", defaultValue: "Show Diff"), systemImage: "arrow.left.arrow.right")
+            }
+            if canShowBlame {
+                Button {
+                    fileActions.onBlame(file.path)
+                } label: {
+                    Label(String(localized: "gitSidebar.context.showBlame", defaultValue: "Show Blame"), systemImage: "clock")
+                }
+            }
+            Divider()
+            Button {
+                fileActions.onCopyPath(file.path)
+            } label: {
+                Label(String(localized: "gitSidebar.context.copyPath", defaultValue: "Copy Relative Path"), systemImage: "doc.on.clipboard")
+            }
+
+        case .untracked:
+            Button {
+                fileActions.onStage(file.path)
+            } label: {
+                Label(String(localized: "gitSidebar.context.stage", defaultValue: "Stage File"), systemImage: "plus.circle")
+            }
+            Button(role: .destructive) {
+                confirmAction = .deleteFile(path: file.path)
+            } label: {
+                Label(String(localized: "gitSidebar.context.delete", defaultValue: "Delete File"), systemImage: "trash")
+            }
+            Divider()
+            Button {
+                fileActions.onDiffUntracked(file.path)
+            } label: {
+                Label(String(localized: "gitSidebar.context.showDiff", defaultValue: "Show Diff"), systemImage: "arrow.left.arrow.right")
+            }
+            Divider()
+            Button {
+                fileActions.onCopyPath(file.path)
+            } label: {
+                Label(String(localized: "gitSidebar.context.copyPath", defaultValue: "Copy Relative Path"), systemImage: "doc.on.clipboard")
+            }
+        }
     }
 
     private func colorForStatus(_ status: GitFileStatus) -> Color {
@@ -431,16 +738,16 @@ private struct GitFileActionButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 10))
+                .font(.system(size: 12))
                 .foregroundStyle(isHovered ? .primary : .secondary)
-                .frame(width: 16, height: 15, alignment: .center)
+                .frame(width: 20, height: 20, alignment: .center)
                 .background(
                     RoundedRectangle(cornerRadius: 3)
                         .fill(Color.primary.opacity(isHovered ? 0.1 : 0))
                 )
         }
         .buttonStyle(.plain)
-        .help(help)
+        .safeHelp(help)
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
@@ -459,7 +766,7 @@ private struct GitSidebarEmptyView: View {
             Image(systemName: "checkmark.circle")
                 .font(.system(size: 28))
                 .foregroundStyle(.green.opacity(0.7))
-                .help(String(localized: "gitSidebar.empty", defaultValue: "Working tree clean"))
+                .safeHelp(String(localized: "gitSidebar.empty", defaultValue: "Working tree clean"))
             Text(String(localized: "gitSidebar.empty", defaultValue: "Working tree clean"))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
@@ -480,7 +787,7 @@ private struct GitSidebarNotRepoView: View {
             Image(systemName: "arrow.triangle.branch")
                 .font(.system(size: 28))
                 .foregroundStyle(.secondary)
-                .help(String(localized: "gitSidebar.notRepo", defaultValue: "Not a git repository"))
+                .safeHelp(String(localized: "gitSidebar.notRepo", defaultValue: "Not a git repository"))
             Text(String(localized: "gitSidebar.notRepo", defaultValue: "Not a git repository"))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)

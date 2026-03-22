@@ -1812,7 +1812,7 @@ private struct DebugWindowControlsView: View {
                             Image(systemName: selectedDevToolsIconOption.rawValue)
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(selectedDevToolsColorOption.color)
-                                .help(String(localized: "settings.devTools.iconPreview", defaultValue: "Icon Preview"))
+                                .safeHelp(String(localized: "settings.devTools.iconPreview", defaultValue: "Icon Preview"))
                         }
 
                         HStack(spacing: 12) {
@@ -3578,7 +3578,7 @@ struct SettingsView: View {
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
                                     .disabled(!canPreviewNotificationSound)
-                                    .help(String(localized: "settings.notifications.previewSound", defaultValue: "Preview Sound"))
+                                    .safeHelp(String(localized: "settings.notifications.previewSound", defaultValue: "Preview Sound"))
                                 }
 
                                 if notificationSound == NotificationSoundSettings.customFileValue {

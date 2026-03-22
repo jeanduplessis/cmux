@@ -47,12 +47,13 @@ const STATUS = {
 // (Individual helper functions below handle cmux CLI calls directly)
 
 /**
- * Set sidebar status for this agent.
+ * Set sidebar status for this agent, scoped to the specific terminal surface.
  */
 async function setStatus(
   $: any,
   status: (typeof STATUS)[keyof typeof STATUS],
   workspace: string | undefined,
+  surface: string | undefined,
   customValue?: string,
 ) {
   const value = customValue ?? status.value;
@@ -69,7 +70,10 @@ async function setStatus(
     if (workspace) {
       args.push("--workspace", workspace);
     }
-    await $`cmux ${args}`.nothrow();
+    if (surface) {
+      args.push("--surface", surface);
+    }
+    await $`cmux ${args}`.quiet().nothrow();
   } catch {
     // ignore
   }
@@ -108,7 +112,7 @@ async function notify(
     if (surface) {
       args.push("--surface", surface);
     }
-    await $`cmux ${args}`.nothrow();
+    await $`cmux ${args}`.quiet().nothrow();
   } catch {
     // ignore
   }
@@ -126,7 +130,7 @@ async function clearNotifications(
     if (workspace) {
       args.push("--workspace", workspace);
     }
-    await $`cmux ${args}`.nothrow();
+    await $`cmux ${args}`.quiet().nothrow();
   } catch {
     // ignore
   }
@@ -136,10 +140,11 @@ async function clearNotifications(
  * Synchronous cleanup using execSync — suitable for process "exit" handlers
  * where async operations won't complete.
  */
-function cleanupSync(workspace: string | undefined) {
+function cleanupSync(workspace: string | undefined, surface: string | undefined) {
   const wsArgs = workspace ? ["--workspace", workspace] : [];
+  const surfaceArgs = surface ? ["--surface", surface] : [];
   try {
-    spawnSync("cmux", ["clear-status", AGENT_KEY, ...wsArgs], {
+    spawnSync("cmux", ["clear-status", AGENT_KEY, ...wsArgs, ...surfaceArgs], {
       timeout: 2000,
       stdio: "ignore",
     });
@@ -147,7 +152,7 @@ function cleanupSync(workspace: string | undefined) {
     // ignore
   }
   try {
-    spawnSync("cmux", ["clear-agent-pid", AGENT_KEY, ...wsArgs], {
+    spawnSync("cmux", ["clear-agent-pid", AGENT_KEY, ...wsArgs, ...surfaceArgs], {
       timeout: 2000,
       stdio: "ignore",
     });
@@ -162,6 +167,60 @@ function cleanupSync(workspace: string | undefined) {
   } catch {
     // ignore
   }
+}
+
+// ── TTS helpers ─────────────────────────────────────────────────────
+
+/**
+ * Get the 1-based tab number for the current workspace by parsing
+ * `cmux list-workspaces` output. Caches the result since the workspace
+ * index is stable during a session.
+ */
+let cachedTabNumber: number | null = null;
+
+function getTabNumber(workspace: string | undefined): number | null {
+  if (cachedTabNumber !== null) return cachedTabNumber;
+  if (!workspace) return null;
+  try {
+    const output = execSync("cmux --json list-workspaces", {
+      timeout: 2000,
+      encoding: "utf-8",
+    });
+    const data = JSON.parse(output);
+    const workspaces: any[] = data?.workspaces ?? [];
+    const wsUpper = workspace.toUpperCase();
+    for (const ws of workspaces) {
+      const id = (ws.id ?? "").toUpperCase();
+      if (id === wsUpper) {
+        cachedTabNumber = (ws.index ?? 0) + 1; // 1-based
+        return cachedTabNumber;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/**
+ * Build the "in tab N of the X project" suffix for TTS messages.
+ */
+function buildLocationSuffix(
+  workspace: string | undefined,
+  projectName: string,
+): string {
+  const tabNum = getTabNumber(workspace);
+  const tabPart = tabNum !== null ? `in tab ${tabNum} of` : "in";
+  return `${tabPart} the ${projectName} project`;
+}
+
+/**
+ * Fire-and-forget TTS. Calls the `tts` CLI with the given message.
+ * Does not block the event handler. Silently ignores errors
+ * (e.g. if `tts` is not installed).
+ */
+function speak($: any, message: string) {
+  $`tts ${message}`.quiet().nothrow().catch(() => {});
 }
 
 // ── Verbose tool status description ─────────────────────────────────
@@ -265,19 +324,20 @@ export const CmuxIntegration = async ({
       String(process.pid),
     ];
     if (workspace) pidArgs.push("--workspace", workspace);
-    await $`cmux ${pidArgs}`.nothrow();
+    if (surface) pidArgs.push("--surface", surface);
+    await $`cmux ${pidArgs}`.quiet().nothrow();
   } catch {
     // ignore
   }
 
   // ── Set initial Idle status ──
-  await setStatus($, STATUS.idle, workspace);
+  await setStatus($, STATUS.idle, workspace, surface);
 
   // ── Register cleanup handlers ──
   function cleanup() {
     if (cleanedUp) return;
     cleanedUp = true;
-    cleanupSync(workspace);
+    cleanupSync(workspace, surface);
   }
 
   process.on("exit", cleanup);
@@ -308,7 +368,11 @@ export const CmuxIntegration = async ({
               workspace,
               surface,
             });
-            await setStatus($, STATUS.idle, workspace);
+            await setStatus($, STATUS.idle, workspace, surface);
+            // Only speak completion if the agent actually ran (skip the initial idle on startup)
+            if (isRunning) {
+              speak($, `Kilo agent has completed its work ${buildLocationSuffix(workspace, projectName)}`);
+            }
             isRunning = false;
             break;
           }
@@ -321,7 +385,8 @@ export const CmuxIntegration = async ({
               workspace,
               surface,
             });
-            await setStatus($, STATUS.error, workspace);
+            await setStatus($, STATUS.error, workspace, surface);
+            speak($, `Kilo agent encountered an error ${buildLocationSuffix(workspace, projectName)}`);
             isRunning = false;
             break;
           }
@@ -340,14 +405,15 @@ export const CmuxIntegration = async ({
               workspace,
               surface,
             });
-            await setStatus($, STATUS.needsInput, workspace);
+            await setStatus($, STATUS.needsInput, workspace, surface);
+            speak($, `Kilo agent needs your approval ${buildLocationSuffix(workspace, projectName)}`);
             break;
           }
 
           case "permission.replied": {
             await clearNotifications($, workspace);
             if (!isRunning) {
-              await setStatus($, STATUS.running, workspace);
+              await setStatus($, STATUS.running, workspace, surface);
               isRunning = true;
             }
             break;
@@ -384,7 +450,7 @@ export const CmuxIntegration = async ({
           case "message.part.updated": {
             // Agent started responding — set Running status
             if (!isRunning) {
-              await setStatus($, STATUS.running, workspace);
+              await setStatus($, STATUS.running, workspace, surface);
               isRunning = true;
             }
             break;
@@ -403,6 +469,11 @@ export const CmuxIntegration = async ({
       output: { args: Record<string, any> },
     ) => {
       try {
+        // Detect the question/ask tool — agent is asking the user something
+        if (input.tool === "question" || input.tool === "ask") {
+          speak($, `Kilo agent needs you to answer a question ${buildLocationSuffix(workspace, projectName)}`);
+        }
+
         // Clear any pending notifications (permission was granted, agent resumed)
         await clearNotifications($, workspace);
 
@@ -412,7 +483,7 @@ export const CmuxIntegration = async ({
           statusValue = describeToolUse(input.tool, output.args);
         }
 
-        await setStatus($, STATUS.running, workspace, statusValue);
+        await setStatus($, STATUS.running, workspace, surface, statusValue);
         isRunning = true;
       } catch {
         // ignore
