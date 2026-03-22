@@ -182,7 +182,7 @@ function getTabNumber(workspace: string | undefined): number | null {
   if (cachedTabNumber !== null) return cachedTabNumber;
   if (!workspace) return null;
   try {
-    const output = execSync("cmux --json list-workspaces", {
+    const output = execSync("cmux --json --id-format both list-workspaces", {
       timeout: 2000,
       encoding: "utf-8",
     });

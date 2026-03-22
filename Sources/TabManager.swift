@@ -4594,25 +4594,36 @@ extension TabManager {
     }
 
     /// Ensures project.workspaceIds and workspace.projectId are consistent.
-    /// Removes stale references in both directions.
+    /// Removes stale references in both directions and rebuilds workspaceIds
+    /// from workspace→project references (needed after session restore where
+    /// workspaces get new UUIDs but projects retain old workspaceId lists).
     private func reconcileProjectWorkspaceReferences() {
         let tabIds = Set(tabs.map(\.id))
         let projectIds = Set(projects.map(\.id))
 
-        // Remove stale workspace IDs from projects
-        for project in projects {
-            let validIds = project.workspaceIds.filter { tabIds.contains($0) }
-            if validIds.count != project.workspaceIds.count {
-                project.workspaceIds = validIds
-            }
-        }
-
-        // Clear dangling project references from workspaces
+        // Clear dangling project references from workspaces first
         for workspace in tabs {
             if let projectId = workspace.projectId, !projectIds.contains(projectId) {
                 workspace.projectId = nil
                 workspace.worktreePath = nil
                 workspace.worktreeBranch = nil
+            }
+        }
+
+        // Rebuild workspaceIds from workspace→project references.
+        // After session restore, workspaces have new UUIDs so the old
+        // workspaceIds stored in the project snapshot are all stale.
+        // Use workspace ordering from `tabs` to preserve sidebar order.
+        var workspaceIdsByProject: [UUID: [UUID]] = [:]
+        for workspace in tabs {
+            if let projectId = workspace.projectId {
+                workspaceIdsByProject[projectId, default: []].append(workspace.id)
+            }
+        }
+        for project in projects {
+            let rebuilt = workspaceIdsByProject[project.id] ?? []
+            if project.workspaceIds != rebuilt {
+                project.workspaceIds = rebuilt
             }
         }
     }
