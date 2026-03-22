@@ -88,6 +88,46 @@ final class GitStatusService: ObservableObject {
         performRefresh(repoRoot: repoRoot)
     }
 
+    /// Initialize a new git repository in the current directory with a `main` branch
+    /// and an initial empty commit. After success, re-runs directory detection so the
+    /// sidebar transitions from "Not a git repository" to showing repo status.
+    func initializeRepository() {
+        guard let directory = currentDirectory else { return }
+        isLoading = true
+
+        currentTask = Task { [weak self] in
+            // Initialize with default branch "main".
+            let initResult = Self.runGitCommand(
+                directory: directory,
+                arguments: ["init", "-b", "main"]
+            )
+            guard initResult.exitCode == 0 else {
+                await MainActor.run {
+                    self?.isLoading = false
+                }
+                return
+            }
+
+            // Create an initial empty commit so the branch actually exists.
+            _ = Self.runGitCommand(
+                directory: directory,
+                arguments: ["commit", "--allow-empty", "-m", "Initial commit"]
+            )
+
+            guard !Task.isCancelled else { return }
+
+            // Re-run the full directory detection flow which will find the new
+            // repo root, start watching, and refresh status.
+            await MainActor.run {
+                guard let self, !Task.isCancelled else { return }
+                // Reset currentDirectory so updateDirectory doesn't early-return
+                // due to the guard at the top.
+                self.currentDirectory = nil
+                self.updateDirectory(directory)
+            }
+        }
+    }
+
     /// Stop all watching and clear status.
     func stop() {
         currentTask?.cancel()
@@ -158,16 +198,102 @@ final class GitStatusService: ObservableObject {
         }
         let status = parseStatus(result.stdout)
         let expandedUntracked = expandUntrackedDirectories(status.untracked, repoRoot: repoRoot)
+
+        // Fetch per-file diff stats (insertions/deletions) for staged and unstaged files.
+        let stagedStats = fetchDiffStats(repoRoot: repoRoot, cached: true)
+        let unstagedStats = fetchDiffStats(repoRoot: repoRoot, cached: false)
+
+        let stagedWithStats = applyDiffStats(stagedStats, to: status.staged)
+        let unstagedWithStats = applyDiffStats(unstagedStats, to: status.unstaged)
+
         return GitRepoStatus(
             branch: status.branch,
             upstream: status.upstream,
             ahead: status.ahead,
             behind: status.behind,
-            staged: status.staged,
-            unstaged: status.unstaged,
+            staged: stagedWithStats,
+            unstaged: unstagedWithStats,
             untracked: expandedUntracked,
             isGitRepo: true
         )
+    }
+
+    // MARK: - Diff Stats
+
+    /// Per-file diff stat: lines added and removed.
+    private struct DiffStat {
+        let insertions: Int?
+        let deletions: Int?
+    }
+
+    /// Run `git diff --numstat` (or `--cached --numstat` for staged) and return
+    /// a dictionary mapping file paths to their insertion/deletion counts.
+    private nonisolated static func fetchDiffStats(
+        repoRoot: String,
+        cached: Bool
+    ) -> [String: DiffStat] {
+        var args = ["diff", "--numstat"]
+        if cached { args.insert("--cached", at: 1) }
+
+        let result = runGitCommand(directory: repoRoot, arguments: args)
+        guard result.exitCode == 0 else { return [:] }
+
+        return parseDiffNumstat(result.stdout)
+    }
+
+    /// Parse `git diff --numstat` output.
+    ///
+    /// Each line is tab-separated: `<added>\t<deleted>\t<path>`
+    /// Binary files show `-\t-\t<path>`.
+    /// Renames show `<added>\t<deleted>\t<oldPath> => <newPath>` or with `{old => new}` syntax.
+    private nonisolated static func parseDiffNumstat(_ output: String) -> [String: DiffStat] {
+        var stats: [String: DiffStat] = [:]
+
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let parts = line.split(separator: "\t", maxSplits: 2)
+            guard parts.count >= 3 else { continue }
+
+            let addedStr = String(parts[0])
+            let deletedStr = String(parts[1])
+            var path = String(parts[2])
+
+            // Handle rename paths: "old => new" or "{old => new}/suffix"
+            if let arrowRange = path.range(of: " => ") {
+                // Take the new path (after =>). Handle brace syntax: "prefix/{old => new}/suffix"
+                if let braceStart = path[..<arrowRange.lowerBound].lastIndex(of: "{"),
+                   let braceEnd = path[arrowRange.upperBound...].firstIndex(of: "}") {
+                    let prefix = path[..<braceStart]
+                    let newPart = path[arrowRange.upperBound..<braceEnd]
+                    let suffix = path[path.index(after: braceEnd)...]
+                    path = String(prefix) + String(newPart) + String(suffix)
+                } else {
+                    path = String(path[arrowRange.upperBound...])
+                }
+            }
+
+            // Binary files report "-" for both counts.
+            let insertions = Int(addedStr)
+            let deletions = Int(deletedStr)
+
+            stats[path] = DiffStat(insertions: insertions, deletions: deletions)
+        }
+
+        return stats
+    }
+
+    /// Merge diff stats into file entries.
+    private nonisolated static func applyDiffStats(
+        _ stats: [String: DiffStat],
+        to entries: [GitFileEntry]
+    ) -> [GitFileEntry] {
+        guard !stats.isEmpty else { return entries }
+        return entries.map { entry in
+            guard let stat = stats[entry.path] else { return entry }
+            var updated = entry
+            updated.insertions = stat.insertions
+            updated.deletions = stat.deletions
+            return updated
+        }
     }
 
     /// Maximum number of child files to display for an untracked directory.

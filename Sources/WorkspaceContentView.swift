@@ -377,6 +377,7 @@ struct EmptyPanelView: View {
             }
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(key, modifiers: shortcut.eventModifiers)
+            .help(title)
         } else {
             Button(action: action) {
                 HStack(spacing: 10) {
@@ -385,6 +386,7 @@ struct EmptyPanelView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
+            .help(title)
         }
     }
 

@@ -1327,7 +1327,12 @@ struct ContentView: View {
     @State private var selectedTabIds: Set<UUID> = []
     @State private var mountedWorkspaceIds: [UUID] = []
     @State private var lastSidebarSelectionIndex: Int? = nil
-    @State private var titlebarText: String = ""
+    @State private var titlebarContextName: String = ""
+    @State private var titlebarWorkspaceName: String = ""
+    @State private var titlebarBranch: String = ""
+    @State private var titlebarIsDirty: Bool = false
+    @State private var titlebarAhead: Int = 0
+    @State private var titlebarBehind: Int = 0
     @State private var isFullScreen: Bool = false
     @State private var observedWindow: NSWindow?
     @StateObject private var fullscreenControlsViewModel = TitlebarControlsViewModel()
@@ -1343,6 +1348,8 @@ struct ContentView: View {
     @State private var sidebarResizerCursorReleaseWorkItem: DispatchWorkItem?
     @State private var sidebarResizerPointerMonitor: Any?
     @State private var isResizerBandActive = false
+    @State private var isGitResizerDragging = false
+    @State private var isGitResizerBandActive = false
     @State private var isSidebarResizerCursorActive = false
     @State private var sidebarResizerCursorStabilizer: DispatchSourceTimer?
     @State private var isCommandPalettePresented = false
@@ -1656,6 +1663,7 @@ struct ContentView: View {
 
     private enum SidebarResizerHandle: Hashable {
         case divider
+        case gitDivider
     }
 
     private var sidebarResizerHitWidthPerSide: CGFloat {
@@ -1712,7 +1720,7 @@ struct ContentView: View {
     private func releaseSidebarResizerCursorIfNeeded(force: Bool = false) {
         let isLeftMouseButtonDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
         let shouldKeepCursor = !force
-            && (isResizerDragging || isResizerBandActive || !hoveredResizerHandles.isEmpty || isLeftMouseButtonDown)
+            && (isAnySidebarResizerActive || isLeftMouseButtonDown)
         guard !shouldKeepCursor else { return }
         guard isSidebarResizerCursorActive else { return }
         isSidebarResizerCursorActive = false
@@ -1740,11 +1748,27 @@ struct ContentView: View {
         return point.x >= minX && point.x <= maxX
     }
 
+    private func gitDividerBandContains(pointInContent point: NSPoint, contentBounds: NSRect) -> Bool {
+        guard point.y >= contentBounds.minY, point.y <= contentBounds.maxY else { return false }
+        let dividerX = contentBounds.maxX - gitSidebarWidth
+        let minX = dividerX - sidebarResizerHitWidthPerSide
+        let maxX = dividerX + sidebarResizerHitWidthPerSide
+        return point.x >= minX && point.x <= maxX
+    }
+
+    private var isAnySidebarBandOrDragActive: Bool {
+        isResizerBandActive || isGitResizerBandActive || isResizerDragging || isGitResizerDragging
+    }
+
+    private var isAnySidebarResizerActive: Bool {
+        isAnySidebarBandOrDragActive || !hoveredResizerHandles.isEmpty
+    }
+
     private func updateSidebarResizerBandState(using event: NSEvent? = nil) {
-        guard sidebarState.isVisible,
-              let window = observedWindow,
+        guard let window = observedWindow,
               let contentView = window.contentView else {
             isResizerBandActive = false
+            isGitResizerBandActive = false
             scheduleSidebarResizerCursorRelease(force: true)
             return
         }
@@ -1754,10 +1778,16 @@ struct ContentView: View {
         // event locations during cursor updates, which causes visible cursor flicker.
         let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
         let pointInContent = contentView.convert(pointInWindow, from: nil)
-        let isInDividerBand = dividerBandContains(pointInContent: pointInContent, contentBounds: contentView.bounds)
-        isResizerBandActive = isInDividerBand
 
-        if isInDividerBand || isResizerDragging {
+        let isInLeadingBand = sidebarState.isVisible
+            && dividerBandContains(pointInContent: pointInContent, contentBounds: contentView.bounds)
+        isResizerBandActive = isInLeadingBand
+
+        let isInTrailingBand = gitSidebarState.isVisible
+            && gitDividerBandContains(pointInContent: pointInContent, contentBounds: contentView.bounds)
+        isGitResizerBandActive = isInTrailingBand
+
+        if isAnySidebarBandOrDragActive {
             activateSidebarResizerCursor()
             startSidebarResizerCursorStabilizer()
             // AppKit cursorUpdate handlers from overlapped portal/web views can run
@@ -1778,7 +1808,7 @@ struct ContentView: View {
         timer.schedule(deadline: .now(), repeating: .milliseconds(16), leeway: .milliseconds(2))
         timer.setEventHandler {
             updateSidebarResizerBandState()
-            if isResizerBandActive || isResizerDragging {
+            if isAnySidebarBandOrDragActive {
                 Self.fixedSidebarResizeCursor.set()
             } else {
                 stopSidebarResizerCursorStabilizer()
@@ -1818,7 +1848,7 @@ struct ContentView: View {
                     return false
                 }
             }()
-            if shouldOverrideCursorEvent, (isResizerBandActive || isResizerDragging) {
+            if shouldOverrideCursorEvent, isAnySidebarBandOrDragActive {
                 // Consume hover motion in divider band so overlapped views cannot
                 // continuously reassert their own cursor while we are resizing.
                 activateSidebarResizerCursor()
@@ -1836,6 +1866,7 @@ struct ContentView: View {
             sidebarResizerPointerMonitor = nil
         }
         isResizerBandActive = false
+        isGitResizerBandActive = false
         isSidebarResizerCursorActive = false
         stopSidebarResizerCursorStabilizer()
         scheduleSidebarResizerCursorRelease(force: true)
@@ -1995,52 +2026,104 @@ struct ContentView: View {
         return controller
     }
 
+    private func gitSidebarResizerHandleOverlay(
+        width: CGFloat,
+        availableWidth: CGFloat
+    ) -> some View {
+        Color.clear
+            .frame(width: width)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering {
+                    hoveredResizerHandles.insert(.gitDivider)
+                    activateSidebarResizerCursor()
+                } else {
+                    hoveredResizerHandles.remove(.gitDivider)
+                    let isLeftMouseButtonDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
+                    if isLeftMouseButtonDown {
+                        activateSidebarResizerCursor()
+                    } else {
+                        scheduleSidebarResizerCursorRelease(delay: 0.05)
+                    }
+                }
+                updateSidebarResizerBandState()
+            }
+            .onDisappear {
+                hoveredResizerHandles.remove(.gitDivider)
+                isGitResizerDragging = false
+                gitSidebarDragStartWidth = nil
+                isGitResizerBandActive = false
+                scheduleSidebarResizerCursorRelease(force: true)
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .onChanged { value in
+                        if !isGitResizerDragging {
+                            isGitResizerDragging = true
+                            gitSidebarDragStartWidth = gitSidebarWidth
+                            #if DEBUG
+                            dlog("gitSidebar.resizeDragStart")
+                            #endif
+                        }
+
+                        activateSidebarResizerCursor()
+                        let startWidth = gitSidebarDragStartWidth ?? gitSidebarWidth
+                        // Dragging left increases git sidebar width (trailing edge)
+                        let newWidth = startWidth - value.translation.width
+                        let effectiveMax = max(GitSidebarState.minimumWidth, min(GitSidebarState.maximumWidth, availableWidth / 3))
+                        let clamped = max(GitSidebarState.minimumWidth, min(newWidth, effectiveMax))
+                        withTransaction(Transaction(animation: nil)) {
+                            gitSidebarWidth = clamped
+                        }
+                    }
+                    .onEnded { _ in
+                        if isGitResizerDragging {
+                            isGitResizerDragging = false
+                            gitSidebarDragStartWidth = nil
+                        }
+                        activateSidebarResizerCursor()
+                        scheduleSidebarResizerCursorRelease()
+                    }
+            )
+            .modifier(SidebarResizerAccessibilityModifier(accessibilityIdentifier: "GitSidebarResizer"))
+    }
+
     private var gitSidebarResizerOverlay: some View {
         GeometryReader { proxy in
             let totalWidth = max(0, proxy.size.width)
             let dividerX = max(0, totalWidth - gitSidebarWidth)
-            let trailingWidth = max(0, totalWidth - dividerX - SidebarResizeInteraction.hitWidthPerSide * 2)
 
             HStack(spacing: 0) {
                 Color.clear
-                    .frame(width: max(0, dividerX - SidebarResizeInteraction.hitWidthPerSide))
+                    .frame(width: max(0, dividerX - sidebarResizerHitWidthPerSide))
                     .allowsHitTesting(false)
 
-                Color.clear
-                    .frame(width: SidebarResizeInteraction.hitWidthPerSide * 2)
-                    .contentShape(Rectangle())
-                    .onHover { hovering in
-                        if hovering {
-                            NSCursor.resizeLeftRight.push()
-                        } else {
-                            NSCursor.pop()
-                        }
-                    }
-                    .gesture(
-                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                            .onChanged { value in
-                                if gitSidebarDragStartWidth == nil {
-                                    gitSidebarDragStartWidth = gitSidebarWidth
-                                }
-                                guard let startWidth = gitSidebarDragStartWidth else { return }
-                                let newWidth = startWidth - value.translation.width
-                                let clamped = min(
-                                    max(newWidth, GitSidebarState.minimumWidth),
-                                    min(GitSidebarState.maximumWidth, totalWidth / 3)
-                                )
-                                gitSidebarWidth = clamped
-                                gitSidebarState.persistedWidth = clamped
-                            }
-                            .onEnded { _ in
-                                gitSidebarDragStartWidth = nil
-                            }
-                    )
+                gitSidebarResizerHandleOverlay(
+                    width: sidebarResizerHitWidthPerSide * 2,
+                    availableWidth: totalWidth
+                )
 
                 Color.clear
-                    .frame(width: max(0, trailingWidth))
+                    .frame(maxWidth: .infinity)
                     .allowsHitTesting(false)
             }
             .frame(width: totalWidth, height: proxy.size.height, alignment: .leading)
+            .onAppear {
+                clampGitSidebarWidthIfNeeded(availableWidth: totalWidth)
+            }
+            .onChange(of: totalWidth) {
+                clampGitSidebarWidthIfNeeded(availableWidth: totalWidth)
+            }
+        }
+    }
+
+    private func clampGitSidebarWidthIfNeeded(availableWidth: CGFloat) {
+        let effectiveMax = max(GitSidebarState.minimumWidth, min(GitSidebarState.maximumWidth, availableWidth / 3))
+        let clamped = max(GitSidebarState.minimumWidth, min(gitSidebarWidth, effectiveMax))
+        guard abs(clamped - gitSidebarWidth) > 0.5 else { return }
+        withTransaction(Transaction(animation: nil)) {
+            gitSidebarWidth = clamped
         }
     }
 
@@ -2168,6 +2251,70 @@ struct ContentView: View {
         )
     }
 
+    private var titlebarHasContent: Bool {
+        !titlebarContextName.isEmpty || !titlebarBranch.isEmpty
+    }
+
+    @ViewBuilder
+    private var titlebarTextSegments: some View {
+        if titlebarHasContent {
+            HStack(spacing: 0) {
+                // Context name (project name or directory basename)
+                if !titlebarContextName.isEmpty {
+                    Text(titlebarContextName)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(fakeTitlebarTextColor)
+                        .lineLimit(1)
+                }
+
+                // Workspace name (shown after "/" separator only when in a project and different from context)
+                if !titlebarWorkspaceName.isEmpty {
+                    Text("  /  ")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(fakeTitlebarTextColor.opacity(0.5))
+                        .lineLimit(1)
+                    Text(titlebarWorkspaceName)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(fakeTitlebarTextColor)
+                        .lineLimit(1)
+                }
+
+                // Git branch
+                if !titlebarBranch.isEmpty {
+                    Text("   ")
+                    Text(titlebarBranch)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(fakeTitlebarTextColor.opacity(0.6))
+                        .lineLimit(1)
+                }
+
+                // Dirty indicator (orange dot)
+                if titlebarIsDirty {
+                    Text(" ")
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 6, height: 6)
+                }
+
+                // Ahead count
+                if titlebarAhead > 0 {
+                    Text("  ↑\(titlebarAhead)")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(.green)
+                        .lineLimit(1)
+                }
+
+                // Behind count
+                if titlebarBehind > 0 {
+                    Text("  ↓\(titlebarBehind)")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(.orange)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
     private var customTitlebar: some View {
         ZStack {
             // Enable window dragging from the titlebar strip without making the entire content
@@ -2187,10 +2334,7 @@ struct ContentView: View {
                     DraggableFolderIcon(directory: directory)
                 }
 
-                Text(titlebarText)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(fakeTitlebarTextColor)
-                    .lineLimit(1)
+                titlebarTextSegments
                     .allowsHitTesting(false)
 
                 Spacer()
@@ -2225,15 +2369,60 @@ struct ContentView: View {
     private func updateTitlebarText() {
         guard let selectedId = tabManager.selectedTabId,
               let tab = tabManager.tabs.first(where: { $0.id == selectedId }) else {
-            if !titlebarText.isEmpty {
-                titlebarText = ""
+            // Clear all titlebar state
+            if titlebarHasContent {
+                titlebarContextName = ""
+                titlebarWorkspaceName = ""
+                titlebarBranch = ""
+                titlebarIsDirty = false
+                titlebarAhead = 0
+                titlebarBehind = 0
             }
             return
         }
-        let title = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if titlebarText != title {
-            titlebarText = title
+
+        // Determine context name and workspace name
+        let newContextName: String
+        let newWorkspaceName: String
+        if let project = tabManager.project(forWorkspaceId: selectedId) {
+            newContextName = project.name
+            // Show workspace title after "/" only when different from project name
+            let wsTitle = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            newWorkspaceName = (wsTitle != project.name && !wsTitle.isEmpty) ? wsTitle : ""
+        } else {
+            // Standalone workspace: use directory basename or workspace title
+            let dir = tab.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !dir.isEmpty {
+                newContextName = (dir as NSString).lastPathComponent
+            } else {
+                let wsTitle = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                newContextName = wsTitle.isEmpty ? "" : wsTitle
+            }
+            newWorkspaceName = ""
         }
+
+        // Git branch and dirty state from workspace's shell-reported git info
+        let newBranch: String
+        let newIsDirty: Bool
+        if let gitState = tab.gitBranch {
+            newBranch = gitState.branch
+            newIsDirty = gitState.isDirty
+        } else {
+            newBranch = ""
+            newIsDirty = false
+        }
+
+        // Ahead/behind from gitStatusService (only available when git sidebar service is running)
+        let newAhead = gitStatusService.status.ahead
+        let newBehind = gitStatusService.status.behind
+
+        // Only update state if values changed (avoid unnecessary SwiftUI re-renders)
+        if titlebarContextName != newContextName { titlebarContextName = newContextName }
+        if titlebarWorkspaceName != newWorkspaceName { titlebarWorkspaceName = newWorkspaceName }
+        if titlebarBranch != newBranch { titlebarBranch = newBranch }
+        if titlebarIsDirty != newIsDirty { titlebarIsDirty = newIsDirty }
+        if titlebarAhead != newAhead { titlebarAhead = newAhead }
+        if titlebarBehind != newBehind { titlebarBehind = newBehind }
     }
 
     private func scheduleTitlebarTextRefresh() {
@@ -2470,6 +2659,8 @@ struct ContentView: View {
                 gitPreviewController?.dismiss()
                 gitPreviewController = nil
             }
+            TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronizeForAllWindows()
+            updateSidebarResizerBandState()
         })
 
         view = AnyView(view.onChange(of: selectedTabIds) {
@@ -2517,6 +2708,18 @@ struct ContentView: View {
             guard let tabId = notification.userInfo?[GhosttyNotificationKey.tabId] as? UUID,
                   tabId == tabManager.selectedTabId else { return }
             completeWorkspaceHandoffIfNeeded(focusedTabId: tabId, reason: "focus")
+            scheduleTitlebarTextRefresh()
+        })
+
+        // Refresh titlebar when git branch or dirty state changes (from shell OSC)
+        view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .ghosttyDidSetGitBranch)) { notification in
+            guard let tabId = notification.userInfo?[GhosttyNotificationKey.tabId] as? UUID,
+                  tabId == tabManager.selectedTabId else { return }
+            scheduleTitlebarTextRefresh()
+        })
+
+        // Refresh titlebar when git status changes (ahead/behind counts)
+        view = AnyView(view.onReceive(gitStatusService.$status) { _ in
             scheduleTitlebarTextRefresh()
         })
 
@@ -2754,7 +2957,9 @@ struct ContentView: View {
         view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { notification in
             guard let window = notification.object as? NSWindow,
                   window === observedWindow else { return }
-            clampSidebarWidthIfNeeded(availableWidth: window.contentView?.bounds.width ?? window.contentLayoutRect.width)
+            let availableWidth = window.contentView?.bounds.width ?? window.contentLayoutRect.width
+            clampSidebarWidthIfNeeded(availableWidth: availableWidth)
+            clampGitSidebarWidthIfNeeded(availableWidth: availableWidth)
             updateSidebarResizerBandState()
         })
 
@@ -2790,6 +2995,33 @@ struct ContentView: View {
             }
         })
 
+        view = AnyView(view.onChange(of: gitSidebarWidth) {
+            let sanitized = GitSidebarState.sanitizedWidth(gitSidebarWidth)
+            if abs(gitSidebarWidth - sanitized) > 0.5 {
+                gitSidebarWidth = sanitized
+                return
+            }
+            if abs(gitSidebarState.persistedWidth - sanitized) > 0.5 {
+                gitSidebarState.persistedWidth = sanitized
+            }
+            // Git sidebar width changes are pure SwiftUI layout updates, so portal-hosted
+            // terminals need an explicit post-layout geometry resync.
+            TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronizeForAllWindows()
+            updateSidebarResizerBandState()
+        })
+
+        view = AnyView(view.onChange(of: gitSidebarState.persistedWidth) { _, newValue in
+            let sanitized = GitSidebarState.sanitizedWidth(newValue)
+            if abs(newValue - sanitized) > 0.5 {
+                gitSidebarState.persistedWidth = sanitized
+                return
+            }
+            guard !isGitResizerDragging else { return }
+            if abs(gitSidebarWidth - sanitized) > 0.5 {
+                gitSidebarWidth = sanitized
+            }
+        })
+
         view = AnyView(view.ignoresSafeArea())
         view = AnyView(view.sheet(isPresented: $isFeedbackComposerPresented) {
             SidebarFeedbackComposerSheet()
@@ -2815,7 +3047,9 @@ struct ContentView: View {
                 DispatchQueue.main.async {
                     observedWindow = window
                     isFullScreen = window.styleMask.contains(.fullScreen)
-                    clampSidebarWidthIfNeeded(availableWidth: window.contentView?.bounds.width ?? window.contentLayoutRect.width)
+                    let availableWidth = window.contentView?.bounds.width ?? window.contentLayoutRect.width
+                    clampSidebarWidthIfNeeded(availableWidth: availableWidth)
+                    clampGitSidebarWidthIfNeeded(availableWidth: availableWidth)
                     syncCommandPaletteDebugStateForObservedWindow()
                     installSidebarResizerPointerMonitorIfNeeded()
                     updateSidebarResizerBandState()
@@ -9275,6 +9509,7 @@ private struct SidebarFeedbackComposerSheet: View {
                         )
                     }
                     .accessibilityIdentifier("SidebarFeedbackAttachButton")
+                    .help(String(localized: "sidebar.help.feedback.attachImages.tooltip", defaultValue: "Attach Images"))
 
                     Text(
                         String(
@@ -9292,6 +9527,7 @@ private struct SidebarFeedbackComposerSheet: View {
                             HStack(spacing: 8) {
                                 Image(systemName: "photo")
                                     .foregroundStyle(.secondary)
+                                    .help(String(localized: "sidebar.help.feedback.attachment", defaultValue: "Image Attachment"))
                                 Text(attachment.fileName)
                                     .font(.system(size: 12))
                                     .lineLimit(1)
@@ -10323,11 +10559,16 @@ private struct ProjectHeaderView: View, Equatable {
                 .font(.system(size: 9, weight: .medium))
                 .foregroundColor(.secondary)
                 .frame(width: 12, height: 12)
+                .help(project.isExpanded
+                    ? String(localized: "sidebar.project.collapse", defaultValue: "Collapse Project")
+                    : String(localized: "sidebar.project.expand", defaultValue: "Expand Project")
+                )
 
             // Folder icon — colored by project's custom color when set
             Image(systemName: project.isExpanded ? "folder.fill" : "folder")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(projectIconColor)
+                .help(String(localized: "sidebar.project.folder", defaultValue: "Project"))
 
             // Project name
             Text(project.name)
@@ -10712,6 +10953,15 @@ private struct TabItemView: View, Equatable {
         }
     }
 
+    private var projectWorkspaceKindTooltip: String? {
+        switch projectWorkspaceKind {
+        case .main:     return String(localized: "sidebar.workspace.kind.main", defaultValue: "Main Workspace")
+        case .worktree: return String(localized: "sidebar.workspace.kind.worktree", defaultValue: "Worktree")
+        case .external: return String(localized: "sidebar.workspace.kind.external", defaultValue: "External Workspace")
+        case nil:       return nil
+        }
+    }
+
     private var workspaceShortcutLabel: String? {
         guard let workspaceShortcutDigit else { return nil }
         return "⌘\(workspaceShortcutDigit)"
@@ -10802,12 +11052,14 @@ private struct TabItemView: View, Equatable {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(activeSecondaryColor(0.8))
+                        .help(String(localized: "sidebar.workspace.pinned", defaultValue: "Pinned"))
                 }
 
                 if let kindIcon = projectWorkspaceKindIcon {
                     Image(systemName: kindIcon)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(activeSecondaryColor(0.7))
+                        .safeHelp(projectWorkspaceKindTooltip ?? "")
                 }
 
                 Text(tab.title)
@@ -10900,6 +11152,7 @@ private struct TabItemView: View, Equatable {
                     Image(systemName: logLevelIcon(latestLog.level))
                         .font(.system(size: 8))
                         .foregroundColor(logLevelColor(latestLog.level, isActive: usesInvertedActiveForeground))
+                        .help(logLevelTooltip(latestLog.level))
                     Text(latestLog.message)
                         .font(.system(size: 10))
                         .foregroundColor(activeSecondaryColor(0.8))
@@ -10942,6 +11195,7 @@ private struct TabItemView: View, Equatable {
                                 Image(systemName: "arrow.triangle.branch")
                                     .font(.system(size: 9))
                                     .foregroundColor(activeSecondaryColor(0.6))
+                                    .help(String(localized: "sidebar.workspace.branch", defaultValue: "Git Branch"))
                             }
                             VStack(alignment: .leading, spacing: 1) {
                                 ForEach(Array(branchDirectoryLines.enumerated()), id: \.offset) { _, line in
@@ -10977,6 +11231,7 @@ private struct TabItemView: View, Equatable {
                             Image(systemName: "arrow.triangle.branch")
                                 .font(.system(size: 9))
                                 .foregroundColor(activeSecondaryColor(0.6))
+                                .help(String(localized: "sidebar.workspace.branch", defaultValue: "Git Branch"))
                         }
                         Text(dirRow)
                             .font(.system(size: 10, design: .monospaced))
@@ -11662,6 +11917,16 @@ private struct TabItemView: View, Equatable {
         case .success: return "checkmark.circle.fill"
         case .warning: return "exclamationmark.triangle.fill"
         case .error: return "xmark.circle.fill"
+        }
+    }
+
+    private func logLevelTooltip(_ level: SidebarLogLevel) -> String {
+        switch level {
+        case .info: return String(localized: "sidebar.log.level.info", defaultValue: "Info")
+        case .progress: return String(localized: "sidebar.log.level.progress", defaultValue: "In Progress")
+        case .success: return String(localized: "sidebar.log.level.success", defaultValue: "Success")
+        case .warning: return String(localized: "sidebar.log.level.warning", defaultValue: "Warning")
+        case .error: return String(localized: "sidebar.log.level.error", defaultValue: "Error")
         }
     }
 
@@ -13129,7 +13394,7 @@ private struct TitlebarLeadingInsetReader: NSViewRepresentable {
 }
 
 private struct SidebarBackdrop: View {
-    @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = 0.18
+    @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = 0.30
     @AppStorage("sidebarTintHex") private var sidebarTintHex = "#000000"
     @AppStorage("sidebarMaterial") private var sidebarMaterial = SidebarMaterialOption.sidebar.rawValue
     @AppStorage("sidebarBlendMode") private var sidebarBlendMode = SidebarBlendModeOption.withinWindow.rawValue
@@ -13343,7 +13608,7 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var tintOpacity: Double {
         switch self {
-        case .nativeSidebar: return 0.18
+        case .nativeSidebar: return 0.30
         case .glassBehind: return 0.36
         case .softBlur: return 0.28
         case .popoverGlass: return 0.10

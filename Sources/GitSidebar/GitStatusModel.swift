@@ -64,6 +64,12 @@ struct GitFileEntry: Identifiable, Equatable, Hashable {
     let status: GitFileStatus
     let area: GitStagingArea
 
+    /// Number of lines added in this file's diff, or nil if unavailable (e.g. binary files).
+    var insertions: Int?
+
+    /// Number of lines deleted in this file's diff, or nil if unavailable (e.g. binary files).
+    var deletions: Int?
+
     /// Child file paths (relative to this directory) for untracked directory entries.
     /// Empty for regular file entries.
     var children: [String] = []

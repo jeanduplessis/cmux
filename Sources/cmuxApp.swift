@@ -311,6 +311,18 @@ struct cmuxApp: App {
                 .disabled(!snapshot.hasNotifications)
             }
 
+            CommandMenu(String(localized: "menu.projects.title", defaultValue: "Projects")) {
+                Button(String(localized: "menu.projects.newProject", defaultValue: "New Project…")) {
+                    appDelegate.handleNewProjectRequest()
+                }
+
+                Divider()
+
+                Button(String(localized: "menu.projects.clearAll", defaultValue: "Clear All Projects")) {
+                    NotificationCenter.default.post(name: .clearAllProjectsRequested, object: nil)
+                }
+            }
+
 #if DEBUG
             CommandMenu("Debug") {
                 Button("New Tab With Lorem Search Text") {
@@ -1543,7 +1555,7 @@ private enum DebugWindowConfigSnapshot {
         sidebarState=\(stringValue(defaults, key: "sidebarState", fallback: SidebarStateOption.followWindow.rawValue))
         sidebarBlurOpacity=\(String(format: "%.2f", doubleValue(defaults, key: "sidebarBlurOpacity", fallback: 1.0)))
         sidebarTintHex=\(stringValue(defaults, key: "sidebarTintHex", fallback: "#000000"))
-        sidebarTintOpacity=\(String(format: "%.2f", doubleValue(defaults, key: "sidebarTintOpacity", fallback: 0.18)))
+        sidebarTintOpacity=\(String(format: "%.2f", doubleValue(defaults, key: "sidebarTintOpacity", fallback: 0.30)))
         sidebarCornerRadius=\(String(format: "%.1f", doubleValue(defaults, key: "sidebarCornerRadius", fallback: 0.0)))
         sidebarBranchVerticalLayout=\(boolValue(defaults, key: SidebarBranchLayoutSettings.key, fallback: SidebarBranchLayoutSettings.defaultVerticalLayout))
         sidebarActiveTabIndicatorStyle=\(stringValue(defaults, key: SidebarActiveTabIndicatorSettings.styleKey, fallback: SidebarActiveTabIndicatorSettings.defaultStyle.rawValue))
@@ -1800,6 +1812,7 @@ private struct DebugWindowControlsView: View {
                             Image(systemName: selectedDevToolsIconOption.rawValue)
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(selectedDevToolsColorOption.color)
+                                .help(String(localized: "settings.devTools.iconPreview", defaultValue: "Icon Preview"))
                         }
 
                         HStack(spacing: 12) {
@@ -2170,7 +2183,7 @@ private struct AboutPanelView: View {
 
 private struct SidebarDebugView: View {
     @AppStorage("sidebarPreset") private var sidebarPreset = SidebarPresetOption.nativeSidebar.rawValue
-    @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = 0.18
+    @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = 0.30
     @AppStorage("sidebarTintHex") private var sidebarTintHex = "#000000"
     @AppStorage("sidebarMaterial") private var sidebarMaterial = SidebarMaterialOption.sidebar.rawValue
     @AppStorage("sidebarBlendMode") private var sidebarBlendMode = SidebarBlendModeOption.withinWindow.rawValue
@@ -3565,6 +3578,7 @@ struct SettingsView: View {
                                     .buttonStyle(.bordered)
                                     .controlSize(.small)
                                     .disabled(!canPreviewNotificationSound)
+                                    .help(String(localized: "settings.notifications.previewSound", defaultValue: "Preview Sound"))
                                 }
 
                                 if notificationSound == NotificationSoundSettings.customFileValue {

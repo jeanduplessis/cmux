@@ -243,6 +243,7 @@ private struct NotificationRow: View {
                     .foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
+            .help(String(localized: "notification.dismiss", defaultValue: "Dismiss"))
         }
         .padding(12)
         .background(

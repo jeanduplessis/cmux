@@ -44,10 +44,12 @@ final class WindowTerminalHostView: NSView {
     }
 
     override var isOpaque: Bool { false }
-    private static let sidebarLeadingEdgeEpsilon: CGFloat = 1
-    private static let minimumVisibleLeadingContentWidth: CGFloat = 24
+    private static let sidebarEdgeEpsilon: CGFloat = 1
+    private static let minimumVisibleContentWidth: CGFloat = 24
     private var cachedSidebarDividerX: CGFloat?
     private var sidebarDividerMissCount = 0
+    private var cachedGitSidebarDividerX: CGFloat?
+    private var gitSidebarDividerMissCount = 0
     private var trackingArea: NSTrackingArea?
     private var activeDividerCursorKind: DividerCursorKind?
 #if DEBUG
@@ -146,7 +148,9 @@ final class WindowTerminalHostView: NSView {
         }
 
         if isPointerEvent {
-            if shouldPassThroughToSidebarResizer(at: point) {
+            let visibleHostedViews = visibleHostedSurfaceViews()
+            if shouldPassThroughToSidebarResizer(at: point, visibleHostedViews: visibleHostedViews)
+                || shouldPassThroughToGitSidebarResizer(at: point, visibleHostedViews: visibleHostedViews) {
                 clearActiveDividerCursor(restoreArrow: false)
                 return nil
             }
@@ -195,49 +199,76 @@ final class WindowTerminalHostView: NSView {
         return hitView === self ? nil : hitView
     }
 
-    private func shouldPassThroughToSidebarResizer(at point: NSPoint) -> Bool {
+    /// Returns all visible, non-trivially-sized hosted terminal surface views.
+    /// Shared by both sidebar resizer pass-through checks to avoid duplicate filtering.
+    private func visibleHostedSurfaceViews() -> [GhosttySurfaceScrollView] {
+        subviews.compactMap { $0 as? GhosttySurfaceScrollView }
+            .filter { !$0.isHidden && $0.window != nil && $0.frame.width > 1 && $0.frame.height > 1 }
+    }
+
+    /// Updates a cached divider position with a miss-count strategy to tolerate
+    /// brief layout churn without immediately discarding the cache.
+    ///
+    /// - Parameters:
+    ///   - cached: The current cached divider X position (updated in-place).
+    ///   - missCount: Running count of frames where the divider was not found (updated in-place).
+    ///   - newValue: The newly detected divider position, or `nil` if not found this frame.
+    ///   - invalidateThreshold: Number of consecutive misses before the cache is cleared.
+    private func updateCachedDividerPosition(
+        cached: inout CGFloat?,
+        missCount: inout Int,
+        newValue: CGFloat?,
+        invalidateThreshold: Int = 4
+    ) {
+        if let newValue {
+            cached = newValue
+            missCount = 0
+        } else if cached != nil {
+            missCount += 1
+            if missCount >= invalidateThreshold {
+                cached = nil
+                missCount = 0
+            }
+        }
+    }
+
+    private func shouldPassThroughToSidebarResizer(
+        at point: NSPoint,
+        visibleHostedViews: [GhosttySurfaceScrollView]
+    ) -> Bool {
         // The sidebar resizer handle is implemented in SwiftUI. When terminals
         // are portal-hosted, this AppKit host can otherwise sit above the handle
         // and steal hover/mouse events.
-        let visibleHostedViews = subviews.compactMap { $0 as? GhosttySurfaceScrollView }
-            .filter { !$0.isHidden && $0.window != nil && $0.frame.width > 1 && $0.frame.height > 1 }
 
         // If content is flush to the leading edge, sidebar is effectively hidden.
         // In that state, treating any internal split edge as a sidebar divider
         // steals split-divider cursor/drag behavior.
         let hasLeadingContent = visibleHostedViews.contains {
-            $0.frame.minX <= Self.sidebarLeadingEdgeEpsilon
-                && $0.frame.maxX > Self.minimumVisibleLeadingContentWidth
+            $0.frame.minX <= Self.sidebarEdgeEpsilon
+                && $0.frame.maxX > Self.minimumVisibleContentWidth
         }
         if hasLeadingContent {
-            if cachedSidebarDividerX != nil {
-                sidebarDividerMissCount += 1
-                if sidebarDividerMissCount >= 2 {
-                    cachedSidebarDividerX = nil
-                    sidebarDividerMissCount = 0
-                }
-            }
+            updateCachedDividerPosition(
+                cached: &cachedSidebarDividerX,
+                missCount: &sidebarDividerMissCount,
+                newValue: nil,
+                invalidateThreshold: 2
+            )
             return false
         }
 
         // Ignore transient 0-origin hosts while layouts churn (e.g. workspace
         // creation/switching). They can temporarily report minX=0 and would
         // otherwise clear divider pass-through, causing hover flicker.
-        let dividerCandidates = visibleHostedViews
+        let dividerCandidate = visibleHostedViews
             .map(\.frame.minX)
-            .filter { $0 > Self.sidebarLeadingEdgeEpsilon }
-        if let leftMostEdge = dividerCandidates.min() {
-            cachedSidebarDividerX = leftMostEdge
-            sidebarDividerMissCount = 0
-        } else if cachedSidebarDividerX != nil {
-            // Keep cache briefly for layout churn, but clear if we miss repeatedly
-            // so stale divider positions don't steal pointer routing.
-            sidebarDividerMissCount += 1
-            if sidebarDividerMissCount >= 4 {
-                cachedSidebarDividerX = nil
-                sidebarDividerMissCount = 0
-            }
-        }
+            .filter { $0 > Self.sidebarEdgeEpsilon }
+            .min()
+        updateCachedDividerPosition(
+            cached: &cachedSidebarDividerX,
+            missCount: &sidebarDividerMissCount,
+            newValue: dividerCandidate
+        )
 
         guard let dividerX = cachedSidebarDividerX else {
             return false
@@ -248,8 +279,52 @@ final class WindowTerminalHostView: NSView {
         return point.x >= regionMinX && point.x <= regionMaxX
     }
 
+    private func shouldPassThroughToGitSidebarResizer(
+        at point: NSPoint,
+        visibleHostedViews: [GhosttySurfaceScrollView]
+    ) -> Bool {
+        let hostWidth = bounds.width
+        guard hostWidth > 1 else { return false }
+        let trailingEdge = hostWidth
+
+        // If content is flush to the trailing edge, git sidebar is effectively hidden.
+        let hasTrailingContent = visibleHostedViews.contains {
+            $0.frame.maxX >= trailingEdge - Self.sidebarEdgeEpsilon
+                && $0.frame.width > Self.minimumVisibleContentWidth
+        }
+        if hasTrailingContent {
+            updateCachedDividerPosition(
+                cached: &cachedGitSidebarDividerX,
+                missCount: &gitSidebarDividerMissCount,
+                newValue: nil,
+                invalidateThreshold: 2
+            )
+            return false
+        }
+
+        let dividerCandidate = visibleHostedViews
+            .map(\.frame.maxX)
+            .filter { $0 < trailingEdge - Self.sidebarEdgeEpsilon }
+            .max()
+        updateCachedDividerPosition(
+            cached: &cachedGitSidebarDividerX,
+            missCount: &gitSidebarDividerMissCount,
+            newValue: dividerCandidate
+        )
+
+        guard let dividerX = cachedGitSidebarDividerX else {
+            return false
+        }
+
+        let regionMinX = dividerX - SidebarResizeInteraction.hitWidthPerSide
+        let regionMaxX = dividerX + SidebarResizeInteraction.hitWidthPerSide
+        return point.x >= regionMinX && point.x <= regionMaxX
+    }
+
     private func updateDividerCursor(at point: NSPoint) {
-        if shouldPassThroughToSidebarResizer(at: point) {
+        let visibleHostedViews = visibleHostedSurfaceViews()
+        if shouldPassThroughToSidebarResizer(at: point, visibleHostedViews: visibleHostedViews)
+            || shouldPassThroughToGitSidebarResizer(at: point, visibleHostedViews: visibleHostedViews) {
             clearActiveDividerCursor(restoreArrow: false)
             return
         }

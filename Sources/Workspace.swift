@@ -1727,14 +1727,30 @@ final class Workspace: Identifiable, ObservableObject {
             panelGitBranches[panelId] = state
         }
         if panelId == focusedPanelId {
+            let changed = gitBranch?.branch != state.branch || gitBranch?.isDirty != state.isDirty
             gitBranch = state
+            if changed {
+                NotificationCenter.default.post(
+                    name: .ghosttyDidSetGitBranch,
+                    object: nil,
+                    userInfo: [GhosttyNotificationKey.tabId: id]
+                )
+            }
         }
     }
 
     func clearPanelGitBranch(panelId: UUID) {
         panelGitBranches.removeValue(forKey: panelId)
         if panelId == focusedPanelId {
+            let changed = gitBranch != nil
             gitBranch = nil
+            if changed {
+                NotificationCenter.default.post(
+                    name: .ghosttyDidSetGitBranch,
+                    object: nil,
+                    userInfo: [GhosttyNotificationKey.tabId: id]
+                )
+            }
         }
     }
 

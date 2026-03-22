@@ -33,7 +33,7 @@ struct GitSidebarView: View {
             Divider()
 
             if !service.status.isGitRepo {
-                GitSidebarNotRepoView()
+                GitSidebarNotRepoView(onInit: { service.initializeRepository() })
             } else if service.status.isEmpty {
                 if let branch = service.status.branch {
                     GitSidebarBranchBar(
@@ -115,6 +115,7 @@ private struct GitSidebarBranchBar: View {
             Image(systemName: "arrow.triangle.branch")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
+                .help(String(localized: "gitSidebar.currentBranch", defaultValue: "Current Branch"))
 
             Text(branch)
                 .font(.system(size: 11))
@@ -234,6 +235,10 @@ private struct GitSidebarSection: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help(isExpanded
+                ? String(localized: "gitSidebar.section.collapse", defaultValue: "Collapse")
+                : String(localized: "gitSidebar.section.expand", defaultValue: "Expand")
+            )
 
             // File rows
             if isExpanded {
@@ -269,6 +274,7 @@ private struct GitFileRow: View {
                 .font(.system(size: 10))
                 .foregroundStyle(colorForStatus(file.status))
                 .frame(width: 14, height: 15, alignment: .center)
+                .help(file.status.label)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(file.fileName)
@@ -287,8 +293,25 @@ private struct GitFileRow: View {
 
             Spacer()
 
+            // Diff stat counts (+N -N), shown only when counts are available.
+            if let insertions = file.insertions, let deletions = file.deletions,
+               insertions > 0 || deletions > 0 {
+                HStack(spacing: 3) {
+                    if insertions > 0 {
+                        Text("+\(insertions)")
+                            .foregroundStyle(Color.green.opacity(0.7))
+                    }
+                    if deletions > 0 {
+                        Text("-\(deletions)")
+                            .foregroundStyle(Color.red.opacity(0.7))
+                    }
+                }
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .opacity(isHovered ? 0 : 1)
+            }
+
             // Hover action icons replace the status symbol on hover.
-            ZStack {
+            ZStack(alignment: .trailing) {
                 // Status letter (visible when not hovered)
                 Text(file.status.symbol)
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -333,6 +356,9 @@ private struct GitFileRow: View {
                 }
                 .opacity(isHovered ? 1 : 0)
             }
+            // Fixed width so status symbols align across rows regardless of
+            // how many hover-action buttons each row has (2 vs 3).
+            .frame(width: 52)
             .animation(.easeInOut(duration: 0.12), value: isHovered)
         }
         .padding(.horizontal, 12)
@@ -433,6 +459,7 @@ private struct GitSidebarEmptyView: View {
             Image(systemName: "checkmark.circle")
                 .font(.system(size: 28))
                 .foregroundStyle(.green.opacity(0.7))
+                .help(String(localized: "gitSidebar.empty", defaultValue: "Working tree clean"))
             Text(String(localized: "gitSidebar.empty", defaultValue: "Working tree clean"))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
@@ -445,15 +472,26 @@ private struct GitSidebarEmptyView: View {
 // MARK: - Not a Repo State
 
 private struct GitSidebarNotRepoView: View {
+    let onInit: () -> Void
+
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "exclamationmark.triangle")
+            Image(systemName: "arrow.triangle.branch")
                 .font(.system(size: 28))
-                .foregroundStyle(.orange.opacity(0.7))
+                .foregroundStyle(.secondary)
+                .help(String(localized: "gitSidebar.notRepo", defaultValue: "Not a git repository"))
             Text(String(localized: "gitSidebar.notRepo", defaultValue: "Not a git repository"))
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
+
+            Button(action: onInit) {
+                Text(String(localized: "gitSidebar.initRepo", defaultValue: "Initialize Repository"))
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -465,7 +503,7 @@ private struct GitSidebarNotRepoView: View {
 /// Provides the sidebar background matching the user's configured sidebar material.
 /// Reads the same `@AppStorage` keys as the left sidebar's `SidebarBackdrop`.
 struct GitSidebarBackdrop: View {
-    @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = 0.18
+    @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = 0.30
     @AppStorage("sidebarTintHex") private var sidebarTintHex = "#000000"
     @AppStorage("sidebarMaterial") private var sidebarMaterial = SidebarMaterialOption.sidebar.rawValue
     @AppStorage("sidebarBlendMode") private var sidebarBlendMode = SidebarBlendModeOption.withinWindow.rawValue

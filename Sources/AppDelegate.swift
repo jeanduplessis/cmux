@@ -7936,6 +7936,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 self?.handleRemoveProject(projectId: projectId)
             }
         })
+
+        projectObservers.append(NotificationCenter.default.addObserver(
+            forName: .clearAllProjectsRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleClearAllProjects()
+            }
+        })
     }
 
     func handleNewProjectRequest() {
@@ -8317,6 +8327,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                     try? await WorktreeManager.removeWorktree(
                         repoPath: repoPath,
                         worktreePath: path,
+                        force: true
+                    )
+                }
+            }
+        }
+    }
+
+    func handleClearAllProjects() {
+        guard let tabManager else { return }
+        let allProjects = tabManager.projects
+        guard !allProjects.isEmpty else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(localized: "dialog.clearAllProjects.title", defaultValue: "Clear All Projects?")
+        alert.informativeText = String(
+            localized: "dialog.clearAllProjects.message",
+            defaultValue: "This will remove all \(allProjects.count) project(s) and close their workspaces. Worktrees on disk will also be removed. This cannot be undone."
+        )
+        alert.addButton(withTitle: String(localized: "dialog.clearAllProjects.confirm", defaultValue: "Clear All"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+
+        // Collect all worktree paths and repo paths before teardown
+        var worktreeCleanupPairs: [(repoPath: String, worktreePath: String)] = []
+        for project in allProjects {
+            let childWorkspaces = tabManager.tabs.filter { $0.projectId == project.id }
+            for workspace in childWorkspaces {
+                if let worktreePath = workspace.worktreePath {
+                    worktreeCleanupPairs.append((repoPath: project.repositoryPath, worktreePath: worktreePath))
+                }
+            }
+            // Close all child workspaces
+            for workspace in childWorkspaces {
+                tabManager.closeWorkspace(tabId: workspace.id)
+            }
+        }
+
+        // Remove all projects
+        tabManager.clearAllProjects()
+
+        // Clean up worktrees in background
+        if !worktreeCleanupPairs.isEmpty {
+            Task.detached {
+                for pair in worktreeCleanupPairs {
+                    try? await WorktreeManager.removeWorktree(
+                        repoPath: pair.repoPath,
+                        worktreePath: pair.worktreePath,
                         force: true
                     )
                 }

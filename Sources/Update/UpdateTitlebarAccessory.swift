@@ -1116,6 +1116,7 @@ private struct NotificationPopoverRow: View {
                     .foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
+            .help(String(localized: "notification.dismiss", defaultValue: "Dismiss"))
         }
         .padding(10)
         .background(

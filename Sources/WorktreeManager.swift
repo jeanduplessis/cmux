@@ -146,6 +146,25 @@ enum WorktreeManager {
             return "master"
         }
 
+        // Fallback: read the current HEAD symbolic ref. This handles freshly
+        // initialized repos where refs/heads/<branch> doesn't exist yet
+        // (no commits), but HEAD already points to the intended branch.
+        let headResult = runGitCommand(
+            directory: repoPath,
+            arguments: ["symbolic-ref", "HEAD"]
+        )
+        if headResult.exitCode == 0,
+           let headOutput = headResult.stdout?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !headOutput.isEmpty {
+            let components = headOutput.split(separator: "/")
+            if let branchName = components.last {
+                let name = String(branchName)
+                if name == "main" || name == "master" {
+                    return name
+                }
+            }
+        }
+
         return nil
     }
 

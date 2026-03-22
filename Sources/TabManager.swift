@@ -891,6 +891,19 @@ class TabManager: ObservableObject {
         sentryBreadcrumb("project.remove", data: ["projectId": projectId.uuidString])
     }
 
+    /// Remove all projects, detaching any workspace references.
+    /// This is a data-only operation — callers handle confirmation and worktree cleanup.
+    func clearAllProjects() {
+        let projectIds = projects.map(\.id)
+        for workspace in tabs where workspace.projectId != nil {
+            workspace.projectId = nil
+            workspace.worktreePath = nil
+            workspace.worktreeBranch = nil
+        }
+        projects.removeAll()
+        sentryBreadcrumb("project.clearAll", data: ["count": projectIds.count])
+    }
+
     /// Toggle project expand/collapse state.
     func toggleProjectExpanded(projectId: UUID) {
         guard let project = project(withId: projectId) else { return }
@@ -2484,12 +2497,36 @@ class TabManager: ObservableObject {
 
     private func windowTitle(for tab: Workspace?) -> String {
         guard let tab else { return "cmux" }
-        let trimmedTitle = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedTitle.isEmpty {
-            return trimmedTitle
+
+        // Build a descriptive title for Mission Control / Dock
+        var parts: [String] = []
+
+        // Context: project name or directory basename
+        if let project = project(forWorkspaceId: tab.id) {
+            parts.append(project.name)
+            // Workspace title after separator only when different from project name
+            let wsTitle = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !wsTitle.isEmpty && wsTitle != project.name {
+                parts.append(wsTitle)
+            }
+        } else {
+            let dir = tab.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !dir.isEmpty {
+                parts.append((dir as NSString).lastPathComponent)
+            } else {
+                let wsTitle = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !wsTitle.isEmpty {
+                    parts.append(wsTitle)
+                }
+            }
         }
-        let trimmedDirectory = tab.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedDirectory.isEmpty ? "cmux" : trimmedDirectory
+
+        // Git branch
+        if let branch = tab.gitBranch?.branch {
+            parts.append(branch)
+        }
+
+        return parts.isEmpty ? "cmux" : parts.joined(separator: " — ")
     }
 
     func focusTab(_ tabId: UUID, surfaceId: UUID? = nil, suppressFlash: Bool = false) {
@@ -4597,6 +4634,7 @@ extension Notification.Name {
     static let commandPaletteRenameInputDeleteBackwardRequested = Notification.Name("cmux.commandPaletteRenameInputDeleteBackwardRequested")
     static let feedbackComposerRequested = Notification.Name("cmux.feedbackComposerRequested")
     static let ghosttyDidSetTitle = Notification.Name("ghosttyDidSetTitle")
+    static let ghosttyDidSetGitBranch = Notification.Name("ghosttyDidSetGitBranch")
     static let ghosttyDidFocusTab = Notification.Name("ghosttyDidFocusTab")
     static let ghosttyDidFocusSurface = Notification.Name("ghosttyDidFocusSurface")
     static let ghosttyDidBecomeFirstResponderSurface = Notification.Name("ghosttyDidBecomeFirstResponderSurface")
@@ -4611,4 +4649,5 @@ extension Notification.Name {
     static let projectRenameRequested = Notification.Name("cmux.projectRenameRequested")
     static let projectRemoveRequested = Notification.Name("cmux.projectRemoveRequested")
     static let newProjectRequested = Notification.Name("cmux.newProjectRequested")
+    static let clearAllProjectsRequested = Notification.Name("cmux.clearAllProjectsRequested")
 }
